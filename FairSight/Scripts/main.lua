@@ -58,9 +58,14 @@ if tf then
     end)
     if not ok then log("test: spawn error " .. tostring(err)) end
   end) end)
-  ExecuteWithDelay(60000, function() ExecuteInGameThread(function()
+  LoopAsync(30000, function() ExecuteInGameThread(function() pcall(function()
+    local cnt, bad = {}, 0
     for _, c in ipairs(FindAllOf("Abiotic_AI_Controller_ParentBP_C") or {}) do
-      log(string.format("check %s = %.1f", c:GetClass():GetFName():ToString(), c.LastSawTargetCheatDuration))
+      local k = c:GetClass():GetFName():ToString(); cnt[k] = (cnt[k] or 0) + 1
+      if c.LastSawTargetCheatDuration > CAP then bad = bad + 1 end
     end
-  end) end)
+    local parts = {}; for k, v in pairs(cnt) do parts[#parts+1] = k .. "=" .. v end
+    local pc = FindFirstOf("PlayerController"); local pawn = pc and pc:IsValid() and pc.Pawn
+    log("census over_cap=" .. bad .. " pawn=" .. tostring(pawn and pawn:IsValid() and pawn:GetFName():ToString()) .. " " .. table.concat(parts, " "))
+  end) end); return false end)
 end
