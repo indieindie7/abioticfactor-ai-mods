@@ -2,8 +2,8 @@
 -- Stock: Abiotic_AI_Controller_ParentBP_C.LastSawTargetCheatDuration (parent 2 s; Zombie/Coworker/Boxy 999999,
 -- BogMan/Boss_Shadow/Boss_Tentacle/Snowman/Tarasque 120, Robot_Defense 60, ...). See C:/re/abioticfactor/AI-MAP.md C1.
 local CAP = 2.0                      -- seconds of post-LoS live tracking allowed (stock parent default)
-local LOG = "C:/re/abioticfactor/fairsight_log.txt"
-local TESTFLAG = "C:/re/abioticfactor/fairsight_test.txt" -- if present: contains a map to open after menu (headless test)
+local LOG = (os.getenv("AF_FAIRSIGHT_TEST") == "1") and "C:/re/abioticfactor/fairsight_srv_log.txt" or "C:/re/abioticfactor/fairsight_log.txt"
+local TESTFLAG = (os.getenv("AF_FAIRSIGHT_TEST") == "1") and "C:/re/abioticfactor/fairsight_srvtest.txt" or "C:/re/abioticfactor/fairsight_test.txt" -- if present: contains a map to open after menu (headless test)
 local CP = "/Game/Blueprints/Characters/NPCs/Abiotic_AI_Controller_ParentBP.Abiotic_AI_Controller_ParentBP_C"
 
 local function log(s) local f = io.open(LOG, "a"); if f then f:write(os.date("%H:%M:%S ") .. s .. "\n"); f:close() end end
@@ -42,7 +42,7 @@ if tf then
     local pc = FindFirstOf("PlayerController")
     local ksl = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
     log("test: open " .. map .. " pc=" .. tostring(pc and pc:IsValid()))
-    if pc and ksl then ksl:ExecuteConsoleCommand(pc, "open " .. map, nil) end
+    if map ~= "SERVER" and pc and ksl then ksl:ExecuteConsoleCommand(pc, "open " .. map, nil) end
   end) end)
   -- after the map is up, spawn one stock zombie (999999 s cheat) so its controller must get clamped
   ExecuteWithDelay(45000, function() ExecuteInGameThread(function()

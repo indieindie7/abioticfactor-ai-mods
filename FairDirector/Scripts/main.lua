@@ -1,7 +1,7 @@
 -- FairDirector v0.2: Alien-Isolation-style pacing. The director (not the AI's senses) eases off when
 -- players are stressed and lets pressure build when they are calm. Pairs with FairSight (fair senses).
 -- Actuators: Abiotic_AIDirector_C.NPCCap (stock 120), Abiotic_NPCSpawn_ParentBP_C.SpawnCooldown_Default.
-local LOG = "C:/re/abioticfactor/fairdirector_log.txt"
+local LOG = (os.getenv("AF_FAIRSIGHT_TEST") == "1") and "C:/re/abioticfactor/fairdirector_srv_log.txt" or "C:/re/abioticfactor/fairdirector_log.txt"
 local TICK = 2000            -- ms
 local NEAR = 1500            -- uu: NPC counts as pressure inside this radius
 local PEAK, CALM = 0.65, 0.25
