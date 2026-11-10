@@ -54,7 +54,7 @@ local function move_to(pawn, dest, accept)
   pcall(function() c:MoveToLocation(dest, accept, true, true, true, false, nil, true) end)
 end
 
-local function spawn_one(pl)
+local function spawn_one(pl, at)
   local world = FindFirstOf("World"); if not valid(world) then return end
   local spots = {}
   for _, sp in ipairs(FindAllOf("Abiotic_NPCSpawn_ParentBP_C") or {}) do
@@ -80,6 +80,7 @@ local function spawn_one(pl)
     end
   end
   if TEST and #crew == 0 then local s0 = loc(pl[1]); l = {X=s0.X+150, Y=s0.Y, Z=s0.Z} end   -- test: first one spawns next to the fake player
+  if at then l = at end
   if not l then log("spawn: no spot (spawners " .. #spots .. ")"); return end
   local path = CLASSES[math.random(#CLASSES)]
   local name = path:match("([^/]+)$")
@@ -196,3 +197,18 @@ LoopAsync(math.floor(TICK_S*1000), function()
   end)
   return false
 end)
+
+-- test keys (v0.2 test build): F9 = spawn a scientist 3 m in front of you, F10 = log crew + your held item
+local function me() local pc = FindFirstOf("PlayerController"); return pc and valid(pc) and pc.Pawn and valid(pc.Pawn) and pc.Pawn or nil end
+RegisterKeyBind(Key.F9, function() ExecuteInGameThread(function() pcall(function()
+  local p = me(); if not p then log("F9: no pawn"); return end
+  local l = loc(p); local f = p:GetActorForwardVector()
+  spawn_one({p}, {X=l.X + f.X*300, Y=l.Y + f.Y*300, Z=l.Z})
+  log("F9 spawn near player")
+end) end) end)
+RegisterKeyBind(Key.F10, function() ExecuteInGameThread(function() pcall(function()
+  local p = me(); local row = p and (pcall(function() return p.CurrentItemRow:ToString() end) and p.CurrentItemRow:ToString()) or "?"
+  local parts = {}
+  for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), m.owner and "follow" or (m.bed and "home" or "idle"), m.friend, l.X, l.Y) end
+  log("F10 held=" .. tostring(row) .. " gift=" .. tostring(GIFTS[tostring(row):lower()] or false) .. " beds=" .. #beds .. " crew " .. #crew .. " " .. table.concat(parts, " "))
+end) end) end)
