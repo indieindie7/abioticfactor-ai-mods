@@ -1,4 +1,4 @@
--- FairCrew v0.1: random stranded scientists you can recruit as companions.
+-- FairCrew v0.2: random stranded scientists you can recruit as companions.
 -- Folds the villager-companion AIs we studied into one small loop:
 --   Animal Crossing (C:/re/animalcrossing/AI-MAP.md): home spot + idle wander, friendship that grows near you
 --     and decays when you leave them, leaves (goes home) when friendship runs out.
@@ -22,6 +22,12 @@ local FOLLOW_UU     = 400    -- start walking after the owner beyond this
 local LEFT_UU       = 3000   -- owner this far away = "left behind"
 local WANDER_UU     = 700    -- idle wander radius around home
 local TICK_S        = 1.5
+local SETTLE_UU     = 250    -- owner this close to a free bed ...
+local SETTLE_S      = 3      -- ... this long (follower nearby) = scientist moves in
+local BED_WANDER_UU = 400    -- settled scientists wander this close to their bed
+local BED_CLASSES = {"Deployed_Furniture_Bed_ParentBP_C", "Deployed_Furniture_Cot_Military_C", "Deployed_VOTV_Mattress_C", "Deployed_VOTV_SleepingBag_C"}
+local DIR = (debug.getinfo(1, "S").source:match("^@(.*)main%.lua$") or "")
+local GIFTS = dofile(DIR .. "gifts.lua")   -- food + healing item rows (lower-case)
 
 local function log(s) local f = io.open(LOG, "a"); if f then f:write(os.date("%H:%M:%S ") .. s .. "\n"); f:close() end end
 log("loaded" .. (TEST and " (server test)" or ""))
@@ -88,13 +94,44 @@ end
 
 local function followers(p) local n = 0; for _, m in ipairs(crew) do if m.owner == p then n = n + 1 end end; return n end
 
+-- held food/healing item of a player, or nil
+local function held_gift(p)
+  local ok, row = pcall(function() return p.CurrentItemRow:ToString() end)
+  if ok and row and GIFTS[row:lower()] then return row end
+end
+-- take one of the held item (the gift); true if the game confirmed it
+local function take_gift(p, row)
+  local ok = pcall(function()
+    local okh, slot = false, {}
+    pcall(function() local o = {}; p:GetCurrentHeldItem(o, slot, {}, {}) ; okh = o.Success end)
+    local h = slot and slot.ItemDataTable
+    if not h then h = {DataTable = StaticFindObject("/Game/Blueprints/Items/ItemTable_Global.ItemTable_Global"), RowName = FName(row)} end
+    p:ConsumeItemOfSpecificCount(h, 1)
+  end)
+  return ok
+end
+
+local beds, beds_t, claimed = {}, -100, {}   -- claimed[bed full name] = member
+local function refresh_beds()
+  if clock - beds_t < 10 then return end
+  beds_t = clock; beds = {}
+  for _, cn in ipairs(BED_CLASSES) do for _, b in ipairs(FindAllOf(cn) or {}) do if valid(b) then beds[#beds+1] = b end end end
+end
+local function free_bed_near(pos, r)
+  for _, b in ipairs(beds) do
+    local k = b:GetFullName()
+    if not (claimed[k] and valid(claimed[k].pawn)) and d2(loc(b), pos) < r*r then return b, k end
+  end
+end
+
 local function tick()
   clock = clock + TICK_S
-  for i = #crew, 1, -1 do if not valid(crew[i].pawn) then log("lost " .. crew[i].name); table.remove(crew, i) end end
+  for i = #crew, 1, -1 do if not valid(crew[i].pawn) then log("lost " .. crew[i].name); if crew[i].bedkey then claimed[crew[i].bedkey] = nil end; table.remove(crew, i) end end
   local pl = players()
   if #pl == 0 then return end
   if #crew < WORLD_CAP and clock - last_spawn >= RESPAWN_S then last_spawn = clock; spawn_one(pl) end
 
+  refresh_beds()
   for _, m in ipairs(crew) do
     local here = loc(m.pawn)
     if m.owner and not valid(m.owner) then m.owner = nil end
@@ -102,14 +139,19 @@ local function tick()
       -- idle: AC-style wander around home; recruit when a player lingers close
       local best, bd
       for _, p in ipairs(pl) do local dd = d2(here, loc(p)); if not bd or dd < bd then best, bd = p, dd end end
-      if bd and bd < RECRUIT_UU*RECRUIT_UU and followers(best) < PER_PLAYER then
+      local gift = best and held_gift(best)
+      if bd and bd < RECRUIT_UU*RECRUIT_UU and gift and followers(best) < PER_PLAYER then
         m.near_s = m.near_s + TICK_S
-        if m.near_s >= RECRUIT_S then m.owner = best; m.friend = math.max(m.friend, 50); log("recruited " .. m.name .. " friend=" .. m.friend) end
+        if m.near_s >= RECRUIT_S then
+          local took = take_gift(best, gift)
+          m.owner = best; m.settled = false; m.friend = math.max(m.friend, 50) + 10; m.near_s = 0
+          log("recruited " .. m.name .. " with " .. gift .. " took=" .. tostring(took) .. " friend=" .. m.friend)
+        end
       else
         m.near_s = 0
         if clock >= m.wander_t then
           m.wander_t = clock + math.random(10, 20)
-          local a = math.random() * 2 * math.pi; local r = math.random(200, WANDER_UU)
+          local a = math.random() * 2 * math.pi; local r = math.random(m.bed and 100 or 200, m.bed and BED_WANDER_UU or WANDER_UU)
           move_to(m.pawn, {X=m.home.X + r*math.cos(a), Y=m.home.Y + r*math.sin(a), Z=m.home.Z}, 50.0)
         end
       end
@@ -119,7 +161,24 @@ local function tick()
       if dd > FOLLOW_UU*FOLLOW_UU then move_to(m.pawn, o, FOLLOW_UU*0.5) end
       if dd < 1500*1500 then m.friend = math.min(100, m.friend + TICK_S/10)
       elseif dd > LEFT_UU*LEFT_UU then m.friend = m.friend - TICK_S/2 end
-      if m.friend <= 0 then m.owner = nil; m.friend = 0; m.wander_t = 0; log("went home " .. m.name) end
+      if m.friend <= 0 then
+        m.owner = nil; m.friend = 0; m.wander_t = 0
+        if m.bed then claimed[m.bedkey] = nil; m.bed, m.bedkey = nil, nil end
+        log("went home " .. m.name)
+      else
+        -- move in: owner stands at a free bed with this follower close by
+        local b, k = free_bed_near(o, SETTLE_UU)
+        if b and dd < 800*800 then
+          m.settle_s = (m.settle_s or 0) + TICK_S
+          if m.settle_s >= SETTLE_S then
+            if m.bedkey then claimed[m.bedkey] = nil end
+            claimed[k] = m; m.bed, m.bedkey = b, k
+            local bl = loc(b); m.home = {X=bl.X, Y=bl.Y, Z=bl.Z}
+            m.owner = nil; m.wander_t = 0; m.settle_s = 0
+            log("moved in " .. m.name .. " bed=" .. k:match("[^%.:]+$"))
+          end
+        else m.settle_s = 0 end
+      end
     end
   end
 end
@@ -131,7 +190,7 @@ LoopAsync(math.floor(TICK_S*1000), function()
     ticks = ticks + 1
     if ticks % 20 == 0 then
       local parts = {}
-      for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), m.owner and "follow" or "idle", m.friend, l.X, l.Y) end
+      for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), m.owner and "follow" or (m.bed and "home" or "idle"), m.friend, l.X, l.Y) end
       log("crew " .. #crew .. " " .. table.concat(parts, " "))
     end
   end)
