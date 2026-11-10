@@ -16,3 +16,8 @@ Log: `C:/re/abioticfactor/faircrew_log.txt`.
 
 ## v0.2 (11-09)
 - Server: loads, no tick errors, no recruit without a gift. Gift take, bed move-in and walking: UNVERIFIED (need a real player).
+
+## Self-test
+`tools\selftest.ps1` runs `Scripts/selftest.lua` on a hidden dedicated server (see TESTPLAN.md, "Automated self-test"). 2026-11-10: 12/12 pass, 1 SKIP, 1 INFO.
+
+v0.2.1 fixes found by it: spawned scientists could stand still forever (movement mode None, or movement tick off, or no nav path); a destroyed scientist is now dropped from the crew by a stricter check (not confirmed by the test).

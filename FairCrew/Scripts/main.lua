@@ -5,7 +5,8 @@
 --   Core Keeper villagers (C:/re/corekeeper/mod): small crew cap, follow the owner, return home when left.
 -- Fair play: crew use the stock ally pawns (NarrativeNPC_BossAlly*) and their stock BT for combat;
 -- no stat buffs, no teleports. FairSight caps their wall-tracking like everyone else.
-local LOG  = (os.getenv("AF_FAIRSIGHT_TEST") == "1") and "C:/re/abioticfactor/faircrew_srv_log.txt" or "C:/re/abioticfactor/faircrew_log.txt"
+local SELFTEST = os.getenv("AF_FAIRCREW_SELFTEST") == "1"   -- scripted self-test, see selftest.lua
+local LOG  = (os.getenv("AF_FAIRSIGHT_TEST") == "1" or SELFTEST) and "C:/re/abioticfactor/faircrew_srv_log.txt" or "C:/re/abioticfactor/faircrew_log.txt"
 local TEST = os.getenv("AF_FAIRSIGHT_TEST") == "1"   -- server test: PlayerStart stands in for a player
 
 local CLASSES = {
@@ -35,13 +36,24 @@ log("loaded" .. (TEST and " (server test)" or ""))
 local function loc(a) return a:K2_GetActorLocation() end
 local function d2(a, b) local x, y, z = a.X-b.X, a.Y-b.Y, a.Z-b.Z; return x*x+y*y+z*z end
 local function valid(o) return o and o:IsValid() end
+local function alive(a)   -- a destroyed actor stays IsValid until garbage collection
+  if not valid(a) then return false end
+  local ok, dying = pcall(function() return a:IsActorBeingDestroyed() end)
+  if ok and dying then return false end
+  local ok2, root = pcall(function() return a.RootComponent end)
+  return ok2 and valid(root)
+end
 
 local crew = {}        -- [i] = {pawn, home={X,Y,Z}, owner, friend 0..100, near_s, wander_t, name}
 local last_spawn = -RESPAWN_S
 local navlogged = false
+local movelog = 0
 local clock = 0
+local FAKE, FAKE_BEDS, AUTOSPAWN, SELF = nil, nil, true, nil   -- self-test hooks
+local selftest_load
 
 local function players()
+  if FAKE then return FAKE end
   local out = {}
   for _, p in ipairs(FindAllOf("Abiotic_PlayerCharacter_C") or {}) do if valid(p) then out[#out+1] = p end end
   if TEST and #out == 0 then local ps = FindFirstOf("PlayerStart"); if valid(ps) then out[1] = ps end end
@@ -51,7 +63,14 @@ end
 local function move_to(pawn, dest, accept)
   local c = pawn.Controller
   if not valid(c) then return end
-  pcall(function() c:MoveToLocation(dest, accept, true, true, true, false, nil, true) end)
+  -- EPathFollowingRequestResult: 0 Failed, 1 AlreadyAtGoal, 2 RequestSuccessful
+  local ok, r = pcall(function() return c:MoveToLocation(dest, accept, true, true, true, false, nil, true) end)
+  local direct = false
+  if not ok or r == 0 then   -- no path (no navmesh here): walk straight instead of standing still
+    direct = true
+    ok, r = pcall(function() return c:MoveToLocation(dest, accept, true, false, false, false, nil, true) end)
+  end
+  if SELFTEST and movelog < 6 then movelog = movelog + 1; log("move ok=" .. tostring(ok) .. " r=" .. tostring(r) .. " direct=" .. tostring(direct)) end
 end
 
 local function spawn_one(pl, at)
@@ -117,6 +136,7 @@ local function refresh_beds()
   if clock - beds_t < 10 then return end
   beds_t = clock; beds = {}
   for _, cn in ipairs(BED_CLASSES) do for _, b in ipairs(FindAllOf(cn) or {}) do if valid(b) then beds[#beds+1] = b end end end
+  for _, b in ipairs(FAKE_BEDS or {}) do beds[#beds+1] = b end
 end
 local function free_bed_near(pos, r)
   for _, b in ipairs(beds) do
@@ -127,10 +147,13 @@ end
 
 local function tick()
   clock = clock + TICK_S
-  for i = #crew, 1, -1 do if not valid(crew[i].pawn) then log("lost " .. crew[i].name); if crew[i].bedkey then claimed[crew[i].bedkey] = nil end; table.remove(crew, i) end end
+  for i = #crew, 1, -1 do if not alive(crew[i].pawn) then log("lost " .. crew[i].name); if crew[i].bedkey then claimed[crew[i].bedkey] = nil end; table.remove(crew, i) end end
+  for _, m in ipairs(crew) do   -- a spawned NPC can start in MOVE_None (0) or with its movement tick off, and then never walks
+    pcall(function() local cm = m.pawn.CharacterMovement; if not cm:IsComponentTickEnabled() then cm:SetComponentTickEnabled(true) end; if cm.MovementMode == 0 then cm:SetMovementMode(1, 0) end end)
+  end
   local pl = players()
   if #pl == 0 then return end
-  if #crew < WORLD_CAP and clock - last_spawn >= RESPAWN_S then last_spawn = clock; spawn_one(pl) end
+  if AUTOSPAWN and #crew < WORLD_CAP and clock - last_spawn >= RESPAWN_S then last_spawn = clock; spawn_one(pl) end
 
   refresh_beds()
   for _, m in ipairs(crew) do
@@ -188,6 +211,8 @@ local ticks = 0
 LoopAsync(math.floor(TICK_S*1000), function()
   ExecuteInGameThread(function()
     local ok, err = pcall(tick); if not ok then log("tick error " .. tostring(err)) end
+    if SELFTEST and not SELF then selftest_load() end
+    if SELF then local ok2, err2 = pcall(SELF, clock); if not ok2 then log("selftest error " .. tostring(err2)) end end
     ticks = ticks + 1
     if ticks % 20 == 0 then
       local parts = {}
@@ -212,3 +237,13 @@ RegisterKeyBind(Key.F10, function() ExecuteInGameThread(function() pcall(functio
   for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), m.owner and "follow" or (m.bed and "home" or "idle"), m.friend, l.X, l.Y) end
   log("F10 held=" .. tostring(row) .. " gift=" .. tostring(GIFTS[tostring(row):lower()] or false) .. " beds=" .. #beds .. " crew " .. #crew .. " " .. table.concat(parts, " "))
 end) end) end)
+
+selftest_load = function()   -- once the world is up
+  local ps = FindFirstOf("PlayerStart"); if not valid(ps) then return end
+  local ok, r = pcall(function()
+    return dofile(DIR .. "selftest.lua")({crew=crew, claimed=claimed, gifts=GIFTS, spawn_one=spawn_one, log=log, loc=loc,
+      set_fake=function(t) FAKE = t end, set_fake_beds=function(t) FAKE_BEDS = t end,
+      set_autospawn=function(b) AUTOSPAWN = b end, beds_reset=function() beds_t = -100 end})
+  end)
+  if ok then SELF = r else log("selftest load error " .. tostring(r)); SELFTEST = false end
+end
