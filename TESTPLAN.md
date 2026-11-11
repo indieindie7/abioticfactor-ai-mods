@@ -56,3 +56,15 @@ Crashes found: (1) Lua `SetText(FText())` kills the game (pilot `text` op remove
 | 2 F8 twice | PASS | graph region 0 lit pixels after 1st F8, 2602 after 2nd; log `toggle false` / `toggle true` |
 | 3 frame-time log | PASS | every 10 s over all frames, e.g. avg 5.8 ms, 1735 frames |
 Note: the graph draws on the HUD canvas, so full-screen menus (job/trait select) cover it.
+
+## FairCrew rows 6-13 re-test (11-10 23:08-23:13, real client, no input focus: run_route.ps1 + rows6_12.py)
+| Row | Result | Evidence (faircrew_log.txt) |
+|---|---|---|
+| 6 | PASS | `recruited NarrativeNPC_BossAlly with Bandage took=true friend=60` 4 s after spawn at 150 uu; stack 3->2 not read (unverified) |
+| 7 | PASS (log) | after `tp 1500 0` follower moved -19014 -> -17772 (63 uu from player) |
+| 8 | not run | needs a watched fight |
+| 9 | BLOCKED | the only bed seen (-15581,10985) streams out when the player stands there (beds 1 -> 4 far -> 0); follower also stalled 1700 uu away. Needs a bed placed in the player's own area |
+| 10-11 | BLOCKED | depend on 9 |
+| 12 | PASS | player 4000 uu away: f 63 -> 0, `went home NarrativeNPC_BossAlly` at 23:11:09, then `[idle f=0` |
+| 13 | N/A | crew are not saved (by design) |
+Fixes from this run: CLASSES only NarrativeNPC_BossAlly (_Heavy/_Sniper spawn without AI and vanish); take_gift no longer calls GetCurrentHeldItem (crash FField::AddCppProperty); beds re-found every tick (crash 4, stale bed after streaming; no crash in this run).

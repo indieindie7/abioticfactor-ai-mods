@@ -11,8 +11,7 @@ local TEST = os.getenv("AF_FAIRSIGHT_TEST") == "1"   -- server test: PlayerStart
 
 local CLASSES = {
   "/Game/Blueprints/Characters/NarrativeNPCs/NarrativeNPC_BossAlly",
-  "/Game/Blueprints/Characters/NarrativeNPCs/NarrativeNPC_BossAlly_Heavy",
-  "/Game/Blueprints/Characters/NarrativeNPCs/NarrativeNPC_BossAlly_Sniper",
+  -- _Heavy + _Sniper dropped 11-10: spawn with no AI controller and vanish in seconds (Heavy also crashed V_Intro)
 }
 local WORLD_CAP     = 3      -- scientists alive in the world at once
 local PER_PLAYER    = 2      -- followers per player
@@ -108,6 +107,7 @@ local function spawn_one(pl, at)
   if not valid(cls) then log("spawn: no class " .. name); return end
   local a = world:SpawnActor(cls, {X=l.X, Y=l.Y, Z=l.Z+100}, {Pitch=0, Yaw=math.random(0, 359), Roll=0})
   if not valid(a) then log("spawn: failed " .. name); return end
+  if not valid(a.Controller) then pcall(function() a:SpawnDefaultController() end) end   -- placed-by-script pawns can come up without AI
   crew[#crew+1] = {pawn=a, home={X=l.X, Y=l.Y, Z=l.Z}, owner=nil, friend=0, near_s=0, wander_t=0, name=name}
   log(string.format("spawn %s at %.0f %.0f %.0f ctrl=%s", name, l.X, l.Y, l.Z, tostring(valid(a.Controller) and a.Controller:GetClass():GetFName():ToString())))
 end
@@ -121,27 +121,30 @@ local function held_gift(p)
 end
 -- take one of the held item (the gift); true if the game confirmed it
 local function take_gift(p, row)
-  local ok = pcall(function()
-    local okh, slot = false, {}
-    pcall(function() local o = {}; p:GetCurrentHeldItem(o, slot, {}, {}) ; okh = o.Success end)
-    local h = slot and slot.ItemDataTable
-    if not h then h = {DataTable = StaticFindObject("/Game/Blueprints/Items/ItemTable_Global.ItemTable_Global"), RowName = FName(row)} end
+  -- 11-10: GetCurrentHeldItem(o,slot,{},{}) crashed the client (FField::AddCppProperty) 4 s after the
+  -- recruit started; now the row handle is built here (the Lua side takes exactly 2 args)
+  local ok, e = pcall(function()
+    local h = {DataTable = StaticFindObject("/Game/Blueprints/Items/ItemTable_Global.ItemTable_Global"), RowName = FName(row)}
     p:ConsumeItemOfSpecificCount(h, 1)
   end)
+  if not ok then log("take_gift error " .. tostring(e)) end
   return ok
 end
 
 local beds, beds_t, claimed = {}, -100, {}   -- claimed[bed full name] = member
 local function refresh_beds()
-  if clock - beds_t < 10 then return end
+  -- every tick (was 10 s): a cached bed actor can go stale when its area streams out/in (crash 4, 11-10)
+  if clock - beds_t < TICK_S * 0.5 then return end
   beds_t = clock; beds = {}
   for _, cn in ipairs(BED_CLASSES) do for _, b in ipairs(FindAllOf(cn) or {}) do if valid(b) then beds[#beds+1] = b end end end
   for _, b in ipairs(FAKE_BEDS or {}) do beds[#beds+1] = b end
 end
 local function free_bed_near(pos, r)
   for _, b in ipairs(beds) do
-    local k = b:GetFullName()
-    if not (claimed[k] and valid(claimed[k].pawn)) and d2(loc(b), pos) < r*r then return b, k end
+    if FAKE_BEDS or alive(b) then
+      local k = b:GetFullName()
+      if not (claimed[k] and valid(claimed[k].pawn)) and d2(loc(b), pos) < r*r then return b, k end
+    end
   end
 end
 
@@ -225,18 +228,37 @@ end)
 
 -- test keys (v0.2 test build): F9 = spawn a scientist 3 m in front of you, F10 = log crew + your held item
 local function me() local pc = FindFirstOf("PlayerController"); return pc and valid(pc) and pc.Pawn and valid(pc.Pawn) and pc.Pawn or nil end
-RegisterKeyBind(Key.F9, function() ExecuteInGameThread(function() pcall(function()
+local function t_spawn(dist)
   local p = me(); if not p then log("F9: no pawn"); return end
   local l = loc(p); local f = p:GetActorForwardVector()
-  spawn_one({p}, {X=l.X + f.X*300, Y=l.Y + f.Y*300, Z=l.Z})
-  log("F9 spawn near player")
-end) end) end)
-RegisterKeyBind(Key.F10, function() ExecuteInGameThread(function() pcall(function()
+  spawn_one({p}, {X=l.X + f.X*dist, Y=l.Y + f.Y*dist, Z=l.Z})
+  log("F9 spawn near player d=" .. dist)
+end
+local function t_status()
   local p = me(); local row = p and (pcall(function() return p.CurrentItemRow:ToString() end) and p.CurrentItemRow:ToString()) or "?"
   local parts = {}
   for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), m.owner and "follow" or (m.bed and "home" or "idle"), m.friend, l.X, l.Y) end
-  log("F10 held=" .. tostring(row) .. " gift=" .. tostring(GIFTS[tostring(row):lower()] or false) .. " beds=" .. #beds .. " crew " .. #crew .. " " .. table.concat(parts, " "))
-end) end) end)
+  local pl = p and loc(p) or {X=0, Y=0}
+  local bl = {}; for _, b in ipairs(beds) do local q = loc(b); bl[#bl+1] = string.format("%.0f,%.0f,%.0f", q.X, q.Y, q.Z) end
+  log(string.format("F10 me=%.0f,%.0f held=%s gift=%s beds=%d crew %d %s", pl.X, pl.Y, tostring(row), tostring(GIFTS[tostring(row):lower()] or false), #beds, #crew, table.concat(parts, " ") .. " beds@" .. table.concat(bl, ";")))
+end
+RegisterKeyBind(Key.F9, function() ExecuteInGameThread(function() pcall(t_spawn, 300) end) end)
+RegisterKeyBind(Key.F10, function() ExecuteInGameThread(function() pcall(t_status) end) end)
+-- test command file (no focus needed): lines "spawn <uu>" | "status"
+local TCMD = "C:/re/abioticfactor/faircrew_cmd.txt"
+LoopAsync(500, function()
+  local f = io.open(TCMD, "r"); if not f then return false end
+  local lines = {}; for l in f:lines() do if #l > 0 then lines[#lines+1] = l end end
+  f:close(); os.remove(TCMD)
+  ExecuteInGameThread(function()
+    for _, l in ipairs(lines) do
+      local op, n = l:match("^(%S+)%s*(%S*)")
+      local ok, e = pcall(function() if op == "spawn" then t_spawn(tonumber(n) or 300) elseif op == "status" then t_status() end end)
+      if not ok then log("cmd error " .. l .. " " .. tostring(e)) end
+    end
+  end)
+  return false
+end)
 
 selftest_load = function()   -- once the world is up
   local ps = FindFirstOf("PlayerStart"); if not valid(ps) then return end

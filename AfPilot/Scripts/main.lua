@@ -5,6 +5,7 @@
 --   list <ClassShortName>              full names of live instances
 --   set <Class> <Prop> <value> | sub <Class> <Prop> <Func>   (never pass FText from Lua: SetText(FText()) crashed the game)
 --   prop <ClassShortName> <Property>   tostring of a property on the first instance
+--   give <ItemRow> [count] | tp <dx> <dy> [dz]   (test helpers)
 local CMD, OUT = "C:/re/abioticfactor/pilot_cmd.txt", "C:/re/abioticfactor/pilot_out.txt"
 local function out(s)
   local f = io.open(OUT, "a"); if f then f:write(os.date("%H:%M:%S ") .. s .. "\n"); f:close() end
@@ -40,6 +41,22 @@ local function run(line)
   elseif op == "sub" then    -- sub <Class> <Prop> <Func>: no-arg function on the object held in a property (e.g. SetKeyboardFocus)
     local t = live(a); local k, fn = b:match("^(%S+)%s+(%S+)$")
     for _, o in ipairs(t) do local x = o[k]; x[fn](x); out("sub " .. a .. "." .. k .. ":" .. fn .. " ok") end
+  elseif op == "give" then   -- give <ItemRow> [count]: straight into the local player's inventory (test only)
+    local p = FindFirstOf("Abiotic_PlayerCharacter_C")
+    if not (p and p:IsValid()) then out("give -> no player") return end
+    local row = {DataTable = StaticFindObject("/Game/Blueprints/Items/ItemTable_Global.ItemTable_Global"), RowName = FName(a)}
+    local cd = {CurrentStack = tonumber(b) or 1, CurrentItemDurability = 100, MaxItemDurability = 100}
+    local r1, r2 = {}, {}
+    p:TryPickupItemAndFindBestSlotForIt(row, cd, r1, r2)
+    out("give " .. a .. " -> entire=" .. tostring(r1.PickedUpEntireStack) .. " left=" .. tostring(r2.NumberOfItemsLeftOver))
+  elseif op == "tp" then     -- tp <dx> <dy> [dz]: move the local player by an offset (test only, no input needed)
+    local p = FindFirstOf("Abiotic_PlayerCharacter_C")
+    if not (p and p:IsValid()) then out("tp -> no player") return end
+    local rest = {}; for w in b:gmatch("%S+") do rest[#rest+1] = tonumber(w) end
+    local l = p:K2_GetActorLocation()
+    local to = {X = l.X + (tonumber(a) or 0), Y = l.Y + (rest[1] or 0), Z = l.Z + (rest[2] or 0)}
+    p:K2_SetActorLocation(to, false, {}, true)
+    local n = p:K2_GetActorLocation(); out(string.format("tp -> %.0f %.0f %.0f", n.X, n.Y, n.Z))
   elseif op == "prop" then
     local t = live(a)
     if #t == 0 then out("prop " .. a .. " -> no live instance") return end
