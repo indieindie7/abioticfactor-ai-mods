@@ -92,3 +92,19 @@ Fixes from this run: CLASSES only NarrativeNPC_BossAlly (_Heavy/_Sniper spawn wi
   | 11 owner back | observed | bot back 07:48:56, crew stays `home` f=63, no re-recruit in 32 s |
   | 12 decay | not shown | crew in `home` kept f=63 for 4 min with the bot 4.5-9 k uu away; decay/"went home" only seen from `follow` (11-10 player run) |
 - Open: the bot walked only by glide (MoveToLocation r=2 after StopLogic still no motion, and no navmesh at the server PlayerStart: "no reachable point"). Last status shows bot=0,0 after gliding 9 k uu +X (bot gone, cause unverified). An extra crew entry `idle f=0` wanders the gym (identity unverified). Gym look is unverified (no screenshot: server has no renderer).
+
+## 11-11 11:52-11:58 client gym run 6 (exe ASLR-off patch, bots = navigation invokers)
+- Nav finding: RecastNavMesh.RuntimeGeneration = 2 (Dynamic), NavigationSystemV1.bGenerateNavigationOnlyAroundNavigationInvokers = true: the game builds navmesh only around invokers. FairCrew now registers the test bot and (TEST/bot mode only) spawned NPCs via RegisterNavigationInvoker(a, 3000, 5000); log "nav invoker true" (call accepted; effect on tiles unverified).
+- Gym centre -17709 13563 118, `bot 300`. All agent-vs-agent, faircrew_log.txt:
+  | Row | Result | Evidence |
+  |---|---|---|
+  | 6 recruit | PASS | 11:54:04 recruited with Bandage friend=60 |
+  | 7 follow | PASS | bot to -19115,13948; crew `follow` at -18862,13947 (from -17262,13605) |
+  | 9 bed move-in | PASS | 11:54:38 moved in, 11:54:46 state home |
+  | 10 stays home | PASS | bot at -17920,15813 (2.0 k uu away), crew `home` at -18862,14008 |
+  | 11 owner back | PASS (differs from server run) | bot back 11:55:29, 11:55:33 recruited again friend=73.45, state follow |
+  | 12 decay | not shown | friend only rose (63 -> 88) |
+- Bot walking: real MoveTo covered 1494 of 1769 uu, 0.3 k of 2291, 0.5 k of 2165, 2412 of 2523, 1.3 k of 2607 before "stuck" -> glide. Every request `direct=true` (pathfinding request fails, straight-line move works), so the invoker did not give the bot a path. Likely stops = gym walls on the straight line (unverified).
+- Bad spot: `bot 400` (-17313,13619) spawns the bot at 0,0,0 and it dies, 3 of 3; cause unverified.
+- Human-only checks left: gym look in game; NPC movement look; player re-test of recruit cooldown; design: should `home` crew re-recruit on owner return (client did, server did not) and should it decay.
+

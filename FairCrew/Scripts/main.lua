@@ -110,7 +110,15 @@ local function spawn_one(pl, at, as_bot)
   if not valid(cls) then log("spawn: no class " .. name); return end
   local a = world:SpawnActor(cls, {X=l.X, Y=l.Y, Z=l.Z+100}, {Pitch=0, Yaw=math.random(0, 359), Roll=0})
   if not valid(a) then log("spawn: failed " .. name); return end
+  -- 11-11 client: first scripted spawn came up at 0,0,0 (crew then spawned at "150 0 -100" and was lost): put it where it was asked
+  pcall(function() local al = loc(a); if d2(al, {X=l.X, Y=l.Y, Z=l.Z+100}) > 500*500 then a:K2_SetActorLocation({X=l.X, Y=l.Y, Z=l.Z+100}, false, {}, true); log(string.format("spawn fixup from %.0f,%.0f,%.0f", al.X, al.Y, al.Z)) end end)
   if not valid(a.Controller) then pcall(function() a:SpawnDefaultController() end) end   -- placed-by-script pawns can come up without AI
+  -- 11-11: the game builds navmesh only around navigation invokers (bGenerateNavigationOnlyAroundNavigationInvokers = true, RuntimeGeneration Dynamic).
+  -- TEST/bot mode only: make spawned NPCs invokers so they can path away from any player (gym, dedicated server).
+  if as_bot or BOT or TEST then
+    local okr, er = pcall(function() StaticFindObject("/Script/NavigationSystem.Default__NavigationSystemV1"):RegisterNavigationInvoker(a, 3000.0, 5000.0) end)
+    log("nav invoker " .. tostring(okr) .. (okr and "" or (" " .. tostring(er))))
+  end
   if as_bot then BOT = a; AUTOSPAWN = false; log(string.format("bot owner %s at %.0f %.0f", name, l.X, l.Y)); return a end
   crew[#crew+1] = {pawn=a, home={X=l.X, Y=l.Y, Z=l.Z}, owner=nil, friend=0, near_s=0, wander_t=0, name=name}
   log(string.format("spawn %s at %.0f %.0f %.0f ctrl=%s", name, l.X, l.Y, l.Z, tostring(valid(a.Controller) and a.Controller:GetClass():GetFName():ToString())))
@@ -257,7 +265,14 @@ function t_bot(dist)
   local p = me(); if not p then log("bot: no pawn"); return end
   local l = loc(p); local f = p:GetActorForwardVector()
   local b = spawn_one({p}, {X=l.X + f.X*dist, Y=l.Y + f.Y*dist, Z=l.Z}, true); if not valid(b) then return end
-  local bl = loc(b); spawn_one({b}, {X=bl.X + 150, Y=bl.Y, Z=bl.Z - 100})
+  -- 11-11 client runs 3+4: the first scripted spawn after level load sits at 0,0,0 and cannot be moved; a second spawn is fine
+  local bl = loc(b)
+  if bl.X*bl.X + bl.Y*bl.Y < 500*500 then
+    log("bot spawn stuck at origin: respawn"); pcall(function() b:K2_DestroyActor() end); BOT = nil
+    dist = dist - 100   -- run 5: same spot failed twice in a row, 100 uu nearer works (cause unverified: something blocks that spot)
+    b = spawn_one({p}, {X=l.X + f.X*dist, Y=l.Y + f.Y*dist, Z=l.Z}, true); if not valid(b) then return end
+  end
+  spawn_one({b}, {X=l.X + f.X*dist + 150, Y=l.Y + f.Y*dist, Z=l.Z})
 end
 -- 11-11 bot walker: runs 1-4 the bot owner got r=2 from MoveToLocation and stood still. Stop its behaviour tree, re-issue the move every
 -- second, and if it still has not moved 50 uu in 2 s, glide it (K2_SetActorLocation, 600 uu/s straight line; test-only, bot owner only).
@@ -274,14 +289,16 @@ LoopAsync(100, function()
     if not BG then return end
     if not valid(BOT) then BG = nil; return end
     local l = loc(BOT); local dx, dy = BG.dest.X - l.X, BG.dest.Y - l.Y; local d = math.sqrt(dx*dx + dy*dy)
-    if d <= BG.accept + 30 then log(string.format("bot arrived %.0f,%.0f glide=%s", l.X, l.Y, tostring(BG.glide))); BG = nil; return end
+    if d <= BG.accept + 30 then log(string.format("bot arrived %.0f,%.0f glide=%s t=%.1fs modefix=%d", l.X, l.Y, tostring(BG.glide), BG.t/10, BG.mfix or 0)); BG = nil; return end
     BG.t = BG.t + 1
+    -- crew get this every tick() (line ~162); the bot is not in crew, and the game drops idle NPCs back to MOVE_None
+    pcall(function() local cm = BOT.CharacterMovement; if not cm:IsComponentTickEnabled() then cm:SetComponentTickEnabled(true) end; if cm.MovementMode == 0 then cm:SetMovementMode(1, 0); BG.mfix = (BG.mfix or 0) + 1 end end)
     if BG.glide then
       local st = math.min(60, d); BOT:K2_SetActorLocation({X = l.X + dx/d*st, Y = l.Y + dy/d*st, Z = l.Z + (BG.dest.Z + 90 - l.Z) * st/d}, false, {}, true)
     elseif BG.t % 10 == 0 then
       local mv = math.sqrt((l.X-BG.last.X)^2 + (l.Y-BG.last.Y)^2); BG.last = {X = l.X, Y = l.Y}
       if mv < 50 then BG.stuck = BG.stuck + 1 else BG.stuck = 0 end
-      if BG.stuck >= 2 then BG.glide = true; log(string.format("bot stuck at %.0f,%.0f (%.0f uu to go): glide", l.X, l.Y, d)) else move_to(BOT, BG.dest, BG.accept) end
+      if BG.stuck >= 4 then BG.glide = true; log(string.format("bot stuck at %.0f,%.0f (%.0f uu to go, mode fixes %d): glide", l.X, l.Y, d, BG.mfix or 0)) else move_to(BOT, BG.dest, BG.accept) end
     end
   end) end)
   return false

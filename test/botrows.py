@@ -8,7 +8,7 @@ def row(name):
     print(f"== {name}"); [print("  ", l[:260]) for l in new if " crew " not in l or " F10 " in l]
 (R / "pilot_cmd.txt").write_text("tpabs -17709 13563 208" + chr(10)); time.sleep(4)  # nav-meshed start room (run 1-3 sat at -13229: no path)
 (R / "pilot_cmd.txt").write_text("gym 1200" + chr(10)); time.sleep(4); po = R / "pilot_out.txt"; print("== gym", po.read_text(errors="replace").strip().splitlines()[-1] if po.exists() else "no pilot_out.txt")
-fc("bot 400", 12); row("6 bot recruits crew")
+fc("bot 300", 12); row("6 bot recruits crew")
 fc("botfar 1500", 20); row("7 crew follows bot 15 m")
 fc("botbed 120", 10); row("9 bed move-in")
 fc("botfar 4000", 30); row("10 crew stays home when bot leaves")
