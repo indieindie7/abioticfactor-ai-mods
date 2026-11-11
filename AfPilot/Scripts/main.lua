@@ -5,7 +5,7 @@
 --   list <ClassShortName>              full names of live instances
 --   set <Class> <Prop> <value> | sub <Class> <Prop> <Func>   (never pass FText from Lua: SetText(FText()) crashed the game)
 --   prop <ClassShortName> <Property>   tostring of a property on the first instance
---   give <ItemRow> [count] | tp <dx> <dy> [dz]   (test helpers)
+--   give <ItemRow> [count] | tp <dx> <dy> [dz] | bed <dx> <dy> | arena [dz]   (test helpers; arena = own test floor + walls + cot)
 local CMD, OUT = "C:/re/abioticfactor/pilot_cmd.txt", "C:/re/abioticfactor/pilot_out.txt"
 local function out(s)
   local f = io.open(OUT, "a"); if f then f:write(os.date("%H:%M:%S ") .. s .. "\n"); f:close() end
@@ -57,6 +57,42 @@ local function run(line)
     local to = {X = l.X + (tonumber(a) or 0), Y = l.Y + (rest[1] or 0), Z = l.Z + (rest[2] or 0)}
     p:K2_SetActorLocation(to, false, {}, true)
     local n = p:K2_GetActorLocation(); out(string.format("tp -> %.0f %.0f %.0f", n.X, n.Y, n.Z))
+  elseif op == "tpabs" then  -- tpabs <x> <y> <z>: absolute (the test world saves the player's last spot; some spots have no navmesh)
+    local p = FindFirstOf("Abiotic_PlayerCharacter_C")
+    if not (p and p:IsValid()) then out("tpabs -> no player") return end
+    local rest = {}; for w in b:gmatch("%S+") do rest[#rest+1] = tonumber(w) end
+    p:K2_SetActorLocation({X = tonumber(a), Y = rest[1], Z = rest[2] or 208}, false, {}, true)
+    local n = p:K2_GetActorLocation(); out(string.format("tpabs -> %.0f %.0f %.0f", n.X, n.Y, n.Z))
+  elseif op == "bed" then    -- bed <dx> <dy>: spawn a military cot on the ground next to the player (keeps the level navmesh, unlike arena)
+    local p = FindFirstOf("Abiotic_PlayerCharacter_C")
+    if not (p and p:IsValid()) then out("bed -> no player") return end
+    local cp = "/Game/Blueprints/DeployedObjects/Furniture/Deployed_Furniture_Cot_Military"
+    LoadAsset(cp .. ".Deployed_Furniture_Cot_Military"); local cot = StaticFindObject(cp .. ".Deployed_Furniture_Cot_Military_C")
+    if not (cot and cot:IsValid()) then out("bed -> no cot class") return end
+    local l = p:K2_GetActorLocation()
+    local bed = FindFirstOf("World"):SpawnActor(cot, {X = l.X + (tonumber(a) or 200), Y = l.Y + (tonumber(b) or 0), Z = l.Z - 90}, {Pitch = 0, Yaw = 0, Roll = 0})
+    local n = bed and bed:IsValid() and bed:K2_GetActorLocation()
+    out(n and string.format("bed -> %s at %.0f %.0f %.0f", bed:GetFName():ToString(), n.X, n.Y, n.Z) or "bed -> spawn failed")
+  elseif op == "arena" then  -- arena [dz]: test arena from engine cubes (floor 20x20 m, low walls, a cot) dz uu above the player, then put the player on it
+    local p = FindFirstOf("Abiotic_PlayerCharacter_C")
+    if not (p and p:IsValid()) then out("arena -> no player") return end
+    local world = FindFirstOf("World"); local l = p:K2_GetActorLocation()
+    local dz = tonumber(a) or 3000
+    local o = {X = l.X, Y = l.Y, Z = l.Z + dz}
+    local SMA = StaticFindObject("/Script/Engine.StaticMeshActor")
+    LoadAsset("/Engine/BasicShapes/Cube.Cube"); local cube = StaticFindObject("/Engine/BasicShapes/Cube.Cube")
+    local function box(x, y, z, sx, sy, sz)   -- engine cube is 100 uu
+      local b = world:SpawnActor(SMA, {X = o.X + x, Y = o.Y + y, Z = o.Z + z}, {Pitch = 0, Yaw = 0, Roll = 0})
+      local c = b.StaticMeshComponent; c:SetMobility(2); c:SetStaticMesh(cube)
+      b:SetActorScale3D({X = sx, Y = sy, Z = sz}); return b
+    end
+    box(0, 0, -10, 20, 20, 0.2)
+    box(1000, 0, 40, 0.2, 20, 1); box(-1000, 0, 40, 0.2, 20, 1); box(0, 1000, 40, 20, 0.2, 1); box(0, -1000, 40, 20, 0.2, 1)
+    local cp = "/Game/Blueprints/DeployedObjects/Furniture/Deployed_Furniture_Cot_Military"
+    LoadAsset(cp .. ".Deployed_Furniture_Cot_Military"); local cot = StaticFindObject(cp .. ".Deployed_Furniture_Cot_Military_C")
+    local bed = cot and world:SpawnActor(cot, {X = o.X + 600, Y = o.Y, Z = o.Z + 10}, {Pitch = 0, Yaw = 0, Roll = 0})
+    p:K2_SetActorLocation({X = o.X - 600, Y = o.Y, Z = o.Z + 120}, false, {}, true)
+    out(string.format("arena -> floor at %.0f %.0f %.0f, cot=%s", o.X, o.Y, o.Z, tostring(bed and bed:IsValid())))
   elseif op == "prop" then
     local t = live(a)
     if #t == 0 then out("prop " .. a .. " -> no live instance") return end

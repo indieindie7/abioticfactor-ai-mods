@@ -50,9 +50,11 @@ local movelog = 0
 local clock = 0
 local FAKE, FAKE_BEDS, AUTOSPAWN, SELF = nil, nil, true, nil   -- self-test hooks
 local selftest_load
+local BOT = nil   -- agent-vs-agent test: an NPC plays the owner (has a virtual gift), no player input needed
 
 local function players()
   if FAKE then return FAKE end
+  if BOT then return valid(BOT) and {BOT} or {} end
   local out = {}
   for _, p in ipairs(FindAllOf("Abiotic_PlayerCharacter_C") or {}) do if valid(p) then out[#out+1] = p end end
   if TEST and #out == 0 then local ps = FindFirstOf("PlayerStart"); if valid(ps) then out[1] = ps end end
@@ -70,9 +72,10 @@ local function move_to(pawn, dest, accept)
     ok, r = pcall(function() return c:MoveToLocation(dest, accept, true, false, false, false, nil, true) end)
   end
   if SELFTEST and movelog < 6 then movelog = movelog + 1; log("move ok=" .. tostring(ok) .. " r=" .. tostring(r) .. " direct=" .. tostring(direct)) end
+  return ok, r, direct
 end
 
-local function spawn_one(pl, at)
+local function spawn_one(pl, at, as_bot)
   local world = FindFirstOf("World"); if not valid(world) then return end
   local spots = {}
   for _, sp in ipairs(FindAllOf("Abiotic_NPCSpawn_ParentBP_C") or {}) do
@@ -108,6 +111,7 @@ local function spawn_one(pl, at)
   local a = world:SpawnActor(cls, {X=l.X, Y=l.Y, Z=l.Z+100}, {Pitch=0, Yaw=math.random(0, 359), Roll=0})
   if not valid(a) then log("spawn: failed " .. name); return end
   if not valid(a.Controller) then pcall(function() a:SpawnDefaultController() end) end   -- placed-by-script pawns can come up without AI
+  if as_bot then BOT = a; AUTOSPAWN = false; log(string.format("bot owner %s at %.0f %.0f", name, l.X, l.Y)); return a end
   crew[#crew+1] = {pawn=a, home={X=l.X, Y=l.Y, Z=l.Z}, owner=nil, friend=0, near_s=0, wander_t=0, name=name}
   log(string.format("spawn %s at %.0f %.0f %.0f ctrl=%s", name, l.X, l.Y, l.Z, tostring(valid(a.Controller) and a.Controller:GetClass():GetFName():ToString())))
 end
@@ -116,11 +120,13 @@ local function followers(p) local n = 0; for _, m in ipairs(crew) do if m.owner 
 
 -- held food/healing item of a player, or nil
 local function held_gift(p)
+  if p == BOT then return "Bandage" end
   local ok, row = pcall(function() return p.CurrentItemRow:ToString() end)
   if ok and row and GIFTS[row:lower()] then return row end
 end
 -- take one of the held item (the gift); true if the game confirmed it
 local function take_gift(p, row)
+  if p == BOT then return true end
   -- 11-10: GetCurrentHeldItem(o,slot,{},{}) crashed the client (FField::AddCppProperty) 4 s after the
   -- recruit started; now the row handle is built here (the Lua side takes exactly 2 args)
   local ok, e = pcall(function()
@@ -136,7 +142,8 @@ local function refresh_beds()
   -- every tick (was 10 s): a cached bed actor can go stale when its area streams out/in (crash 4, 11-10)
   if clock - beds_t < TICK_S * 0.5 then return end
   beds_t = clock; beds = {}
-  for _, cn in ipairs(BED_CLASSES) do for _, b in ipairs(FindAllOf(cn) or {}) do if valid(b) then beds[#beds+1] = b end end end
+  local seen = {}   -- parent + child bed classes both list the same actor
+  for _, cn in ipairs(BED_CLASSES) do for _, b in ipairs(FindAllOf(cn) or {}) do if valid(b) then local k = b:GetFullName(); if not seen[k] then seen[k] = true; beds[#beds+1] = b end end end end
   for _, b in ipairs(FAKE_BEDS or {}) do beds[#beds+1] = b end
 end
 local function free_bed_near(pos, r)
@@ -167,7 +174,7 @@ local function tick()
       local best, bd
       for _, p in ipairs(pl) do local dd = d2(here, loc(p)); if not bd or dd < bd then best, bd = p, dd end end
       local gift = best and held_gift(best)
-      if bd and bd < RECRUIT_UU*RECRUIT_UU and gift and followers(best) < PER_PLAYER then
+      if bd and bd < RECRUIT_UU*RECRUIT_UU and gift and followers(best) < PER_PLAYER and clock >= (m.recruit_cd or 0) then
         m.near_s = m.near_s + TICK_S
         if m.near_s >= RECRUIT_S then
           local took = take_gift(best, gift)
@@ -202,6 +209,7 @@ local function tick()
             claimed[k] = m; m.bed, m.bedkey = b, k
             local bl = loc(b); m.home = {X=bl.X, Y=bl.Y, Z=bl.Z}
             m.owner = nil; m.wander_t = 0; m.settle_s = 0
+            m.recruit_cd = clock + 30   -- 11-10 run: owner still holding the gift re-recruited it 6 s after move-in (ate a 2nd Bandage)
             log("moved in " .. m.name .. " bed=" .. k:match("[^%.:]+$"))
           end
         else m.settle_s = 0 end
@@ -240,7 +248,47 @@ local function t_status()
   for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), m.owner and "follow" or (m.bed and "home" or "idle"), m.friend, l.X, l.Y) end
   local pl = p and loc(p) or {X=0, Y=0}
   local bl = {}; for _, b in ipairs(beds) do local q = loc(b); bl[#bl+1] = string.format("%.0f,%.0f,%.0f", q.X, q.Y, q.Z) end
-  log(string.format("F10 me=%.0f,%.0f held=%s gift=%s beds=%d crew %d %s", pl.X, pl.Y, tostring(row), tostring(GIFTS[tostring(row):lower()] or false), #beds, #crew, table.concat(parts, " ") .. " beds@" .. table.concat(bl, ";")))
+  log(string.format("F10 me=%.0f,%.0f held=%s gift=%s beds=%d crew %d %s", pl.X, pl.Y, tostring(row), tostring(GIFTS[tostring(row):lower()] or false), #beds, #crew, table.concat(parts, " ") .. " beds@" .. table.concat(bl, ";") .. (valid(BOT) and string.format(" bot=%.0f,%.0f", loc(BOT).X, loc(BOT).Y) or "")))
+end
+function t_bot(dist)
+  local p = me(); if not p then log("bot: no pawn"); return end
+  local l = loc(p); local f = p:GetActorForwardVector()
+  local b = spawn_one({p}, {X=l.X + f.X*dist, Y=l.Y + f.Y*dist, Z=l.Z}, true); if not valid(b) then return end
+  local bl = loc(b); spawn_one({b}, {X=bl.X + 150, Y=bl.Y, Z=bl.Z - 100})
+end
+function t_botgo(dx, dy)
+  if not valid(BOT) then log("botgo: no bot"); return end
+  -- 11-10 run 1: bot stood still (not in crew, so the MOVE_None fix in tick() never touched it)
+  pcall(function() local cm = BOT.CharacterMovement; if not cm:IsComponentTickEnabled() then cm:SetComponentTickEnabled(true) end; if cm.MovementMode == 0 then cm:SetMovementMode(1, 0) end end)
+  local l = loc(BOT); local ok, r, direct = move_to(BOT, {X=l.X+dx, Y=l.Y+dy, Z=l.Z}, 50.0)
+  log(string.format("botgo %.0f %.0f from %.0f,%.0f ok=%s r=%s direct=%s ctrl=%s", dx, dy, l.X, l.Y, tostring(ok), tostring(r), tostring(direct), tostring(valid(BOT.Controller))))
+end
+-- 11-10 run 2: botgo offsets had no navmesh path (direct walk stopped after ~90 uu); pick reachable points instead
+function t_botfar(dist)
+  if not valid(BOT) then log("botfar: no bot"); return end
+  local nav = StaticFindObject("/Script/NavigationSystem.Default__NavigationSystemV1"); local world = FindFirstOf("World")
+  local o = loc(BOT); local best, bd = nil, 0
+  for _ = 1, 12 do
+    local out = {}
+    local ok, hit = pcall(function() return nav:K2_GetRandomReachablePointInRadius(world, o, out, dist * 1.3, nil, nil) end)
+    if ok and hit and out.X then local dd = d2(out, o); if dd > bd then best, bd = {X=out.X, Y=out.Y, Z=out.Z}, dd end end
+  end
+  if not best then log("botfar: no reachable point"); return end
+  pcall(function() local cm = BOT.CharacterMovement; if cm.MovementMode == 0 then cm:SetMovementMode(1, 0) end end)
+  local ok, r, direct = move_to(BOT, best, 50.0)
+  log(string.format("botfar %.0f -> %.0f,%.0f (%.0f uu) r=%s direct=%s", dist, best.X, best.Y, math.sqrt(bd), tostring(r), tostring(direct)))
+end
+function t_botback()
+  if not valid(BOT) then return end
+  for _, m in ipairs(crew) do if m.bed and alive(m.bed) then local b = loc(m.bed); local ok, r = move_to(BOT, {X=b.X+100, Y=b.Y, Z=b.Z+90}, 50.0); log("botback r=" .. tostring(r)); return end end
+  log("botback: no crew bed")
+end
+function t_botbed(dx)
+  if not valid(BOT) then log("botbed: no bot"); return end
+  local cp = "/Game/Blueprints/DeployedObjects/Furniture/Deployed_Furniture_Cot_Military"
+  LoadAsset(cp .. ".Deployed_Furniture_Cot_Military"); local cot = StaticFindObject(cp .. ".Deployed_Furniture_Cot_Military_C")
+  local l = loc(BOT); local b = FindFirstOf("World"):SpawnActor(cot, {X=l.X+dx, Y=l.Y, Z=l.Z-90}, {Pitch=0, Yaw=0, Roll=0})
+  beds_t = -100; log("botbed " .. tostring(valid(b) and b:GetFName():ToString()))
 end
 RegisterKeyBind(Key.F9, function() ExecuteInGameThread(function() pcall(t_spawn, 300) end) end)
 RegisterKeyBind(Key.F10, function() ExecuteInGameThread(function() pcall(t_status) end) end)
@@ -252,8 +300,15 @@ LoopAsync(500, function()
   f:close(); os.remove(TCMD)
   ExecuteInGameThread(function()
     for _, l in ipairs(lines) do
-      local op, n = l:match("^(%S+)%s*(%S*)")
-      local ok, e = pcall(function() if op == "spawn" then t_spawn(tonumber(n) or 300) elseif op == "status" then t_status() end end)
+      local op, n, n2 = l:match("^(%S+)%s*(%S*)%s*(%S*)")
+      local ok, e = pcall(function()
+        if op == "spawn" then t_spawn(tonumber(n) or 300) elseif op == "status" then t_status()
+        elseif op == "bot" then t_bot(tonumber(n) or 400)                         -- bot owner in front of the player + a crew NPC next to it
+        elseif op == "botgo" then t_botgo(tonumber(n) or 0, tonumber(n2) or 0)     -- walk the bot owner by an offset (AI pathing)
+        elseif op == "botfar" then t_botfar(tonumber(n) or 1500)                  -- walk the bot to a navmesh-reachable point ~n uu away
+        elseif op == "botback" then t_botback()                                     -- walk the bot back to its crew member's bed
+        elseif op == "botbed" then t_botbed(tonumber(n) or 150) end               -- cot next to the bot owner
+      end)
       if not ok then log("cmd error " .. l .. " " .. tostring(e)) end
     end
   end)

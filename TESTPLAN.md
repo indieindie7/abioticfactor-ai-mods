@@ -68,3 +68,13 @@ Note: the graph draws on the HUD canvas, so full-screen menus (job/trait select)
 | 12 | PASS | player 4000 uu away: f 63 -> 0, `went home NarrativeNPC_BossAlly` at 23:11:09, then `[idle f=0` |
 | 13 | N/A | crew are not saved (by design) |
 Fixes from this run: CLASSES only NarrativeNPC_BossAlly (_Heavy/_Sniper spawn without AI and vanish); take_gift no longer calls GetCurrentHeldItem (crash FField::AddCppProperty); beds re-found every tick (crash 4, stale bed after streaming; no crash in this run).
+
+## 11-10 23:18-23:59 own cot + agent-vs-agent runs
+- Own cot (AfPilot `bed 600 0`) next to the player, map bed not needed (rows9_11.py):
+  - Row 9 PASS: `moved in ... bed=Deployed_Furniture_Cot_Military_C_...` 3 s after the owner stood at the cot.
+  - Row 10 FAIL then fixed: owner still holding the gift re-recruited the crew 6 s after move-in (ate a 2nd Bandage). Fix: 30 s recruit cooldown after move-in. Re-test with the player: unverified.
+  - Row 12 PASS again (`went home` 23:23:40). `arena 3000` smoke: floor + cot spawned (cot=true); not used for rows (no navmesh up there).
+- Agent-vs-agent (botrows.py, FairCrew BOT owner = NPC with a virtual Bandage, no player):
+  - Row 6 PASS (bot recruits crew), row 9 PASS (bot at cot -> `moved in`), cooldown PASS (no re-recruit inside 30 s).
+  - Rows 7/10/11/12 NOT RUN: the bot NPC never walks. MoveToLocation returns 2 (request ok) but the pawn stays put; pathfinding request fails first (direct=true). Cause unverified (likely the BossAlly behaviour tree overrides the move).
+  - Run 4 log shows 4 F9 spawns at 23:53:39-41 and the player moving: not from the driver (keyboard input on the test client).
