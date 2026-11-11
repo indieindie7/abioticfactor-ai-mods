@@ -24,6 +24,14 @@ local WANDER_UU     = 700    -- idle wander radius around home
 local TICK_S        = 1.5
 local SETTLE_UU     = 250    -- owner this close to a free bed ...
 local SETTLE_S      = 3      -- ... this long (follower nearby) = scientist moves in
+-- needs (user 11-11: "The crew should decide if they want to or not depending how well rested and fed they are")
+local REST_UP_S     = 6      -- seconds per +1 rest while at home near the own bed (0 -> 100 in 10 min)
+local REST_DOWN_S   = 18     -- seconds per -1 rest while following (100 -> 0 in 30 min)
+local FED_DOWN_S    = 30     -- seconds per -1 fed, always (100 -> 0 in 50 min)
+local GIFT_FED      = 40     -- a gift item adds this much fed (gifts.lua does not split food from healing yet)
+local JOIN_REST     = 60     -- settled crew joins the owner only when rest >= this ...
+local JOIN_FED      = 40     -- ... and fed >= this (a gift is eaten first when hungry)
+local QUIT_NEED     = 15     -- a follower with a bed walks home when rest or fed drops below this
 local BED_WANDER_UU = 400    -- settled scientists wander this close to their bed
 local BED_CLASSES = {"Deployed_Furniture_Bed_ParentBP_C", "Deployed_Furniture_Cot_Military_C", "Deployed_VOTV_Mattress_C", "Deployed_VOTV_SleepingBag_C"}
 local DIR = (debug.getinfo(1, "S").source:match("^@(.*)main%.lua$") or "")
@@ -50,6 +58,7 @@ local movelog = 0
 local clock = 0
 local FAKE, FAKE_BEDS, AUTOSPAWN, SELF = nil, nil, true, nil   -- self-test hooks
 local selftest_load
+local BOTGIFT = true   -- test: bot owner holds a virtual gift (command "botgift 0|1")
 local BOT = nil   -- agent-vs-agent test: an NPC plays the owner (has a virtual gift), no player input needed
 
 local function players()
@@ -120,7 +129,7 @@ local function spawn_one(pl, at, as_bot)
     log("nav invoker " .. tostring(okr) .. (okr and "" or (" " .. tostring(er))))
   end
   if as_bot then BOT = a; AUTOSPAWN = false; log(string.format("bot owner %s at %.0f %.0f", name, l.X, l.Y)); return a end
-  crew[#crew+1] = {pawn=a, home={X=l.X, Y=l.Y, Z=l.Z}, owner=nil, friend=0, near_s=0, wander_t=0, name=name}
+  crew[#crew+1] = {pawn=a, home={X=l.X, Y=l.Y, Z=l.Z}, owner=nil, friend=0, near_s=0, wander_t=0, name=name, rest=50, fed=50}
   log(string.format("spawn %s at %.0f %.0f %.0f ctrl=%s", name, l.X, l.Y, l.Z, tostring(valid(a.Controller) and a.Controller:GetClass():GetFName():ToString())))
 end
 
@@ -128,7 +137,7 @@ local function followers(p) local n = 0; for _, m in ipairs(crew) do if m.owner 
 
 -- held food/healing item of a player, or nil
 local function held_gift(p)
-  if p == BOT then return "Bandage" end
+  if p == BOT then return BOTGIFT and "Bandage" or nil end
   local ok, row = pcall(function() return p.CurrentItemRow:ToString() end)
   if ok and row and GIFTS[row:lower()] then return row end
 end
@@ -177,17 +186,33 @@ local function tick()
   for _, m in ipairs(crew) do
     local here = loc(m.pawn)
     if m.owner and not valid(m.owner) then m.owner = nil end
+    m.fed = math.max(0, m.fed - TICK_S/FED_DOWN_S)
+    if m.owner then m.rest = math.max(0, m.rest - TICK_S/REST_DOWN_S)
+    elseif m.bed and d2(here, m.home) < 600*600 then m.rest = math.min(100, m.rest + TICK_S/REST_UP_S) end
     if not m.owner then
       -- idle: AC-style wander around home; recruit when a player lingers close
       local best, bd
       for _, p in ipairs(pl) do local dd = d2(here, loc(p)); if not bd or dd < bd then best, bd = p, dd end end
       local gift = best and held_gift(best)
-      if bd and bd < RECRUIT_UU*RECRUIT_UU and gift and followers(best) < PER_PLAYER and clock >= (m.recruit_cd or 0) then
+      -- settled crew (has a bed) decides by its needs: rested + fed joins without a gift, hungry eats the gift first, tired refuses
+      local asked = bd and bd < RECRUIT_UU*RECRUIT_UU and (gift or m.bed) and followers(best) < PER_PLAYER and clock >= (m.recruit_cd or 0)
+      if asked then
         m.near_s = m.near_s + TICK_S
+        if m.near_s >= RECRUIT_S and m.bed then
+          local why
+          if m.rest < JOIN_REST then why = "tired"
+          elseif m.fed < JOIN_FED and not gift then why = "hungry" end
+          if why then
+            m.near_s = 0; m.recruit_cd = clock + 30
+            log(string.format("declined %s: %s rest=%.0f fed=%.0f", m.name, why, m.rest, m.fed))
+          end
+        end
         if m.near_s >= RECRUIT_S then
-          local took = take_gift(best, gift)
-          m.owner = best; m.settled = false; m.friend = math.max(m.friend, 50) + 10; m.near_s = 0
-          log("recruited " .. m.name .. " with " .. gift .. " took=" .. tostring(took) .. " friend=" .. m.friend)
+          local took = false
+          if gift and (not m.bed or m.fed < JOIN_FED) then took = take_gift(best, gift); m.fed = math.min(100, m.fed + GIFT_FED) end
+          gift = gift or "no gift"
+          m.owner = best; m.settled = false; m.friend = math.min(100, math.max(m.friend, 50) + 10); m.near_s = 0
+          log("recruited " .. m.name .. " with " .. gift .. " took=" .. tostring(took) .. " friend=" .. m.friend .. string.format(" rest=%.0f fed=%.0f", m.rest, m.fed))
         end
       else
         m.near_s = 0
@@ -203,7 +228,10 @@ local function tick()
       if dd > FOLLOW_UU*FOLLOW_UU then move_to(m.pawn, o, FOLLOW_UU*0.5) end
       if dd < 1500*1500 then m.friend = math.min(100, m.friend + TICK_S/10)
       elseif dd > LEFT_UU*LEFT_UU then m.friend = m.friend - TICK_S/2 end
-      if m.friend <= 0 then
+      if m.bed and (m.rest < QUIT_NEED or m.fed < QUIT_NEED) then
+        log(string.format("went to bed %s: %s rest=%.0f fed=%.0f", m.name, m.rest < QUIT_NEED and "tired" or "hungry", m.rest, m.fed))
+        m.owner = nil; m.wander_t = 0; m.recruit_cd = clock + 30
+      elseif m.friend <= 0 then
         m.owner = nil; m.friend = 0; m.wander_t = 0
         if m.bed then claimed[m.bedkey] = nil; m.bed, m.bedkey = nil, nil end
         log("went home " .. m.name)
@@ -235,7 +263,7 @@ LoopAsync(math.floor(TICK_S*1000), function()
     ticks = ticks + 1
     if ticks % 20 == 0 then
       local parts = {}
-      for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), m.owner and "follow" or (m.bed and "home" or "idle"), m.friend, l.X, l.Y) end
+      for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f r=%.0f h=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), m.owner and "follow" or (m.bed and "home" or "idle"), m.friend, m.rest, m.fed, l.X, l.Y) end
       log("crew " .. #crew .. " " .. table.concat(parts, " "))
     end
   end)
@@ -256,7 +284,7 @@ end
 local function t_status()
   local p = me(); local row = p and (pcall(function() return p.CurrentItemRow:ToString() end) and p.CurrentItemRow:ToString()) or "?"
   local parts = {}
-  for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), m.owner and "follow" or (m.bed and "home" or "idle"), m.friend, l.X, l.Y) end
+  for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f r=%.0f h=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), m.owner and "follow" or (m.bed and "home" or "idle"), m.friend, m.rest, m.fed, l.X, l.Y) end
   local pl = p and loc(p) or {X=0, Y=0}
   local bl = {}; for _, b in ipairs(beds) do local q = loc(b); bl[#bl+1] = string.format("%.0f,%.0f,%.0f", q.X, q.Y, q.Z) end
   log(string.format("F10 me=%.0f,%.0f held=%s gift=%s beds=%d crew %d %s", pl.X, pl.Y, tostring(row), tostring(GIFTS[tostring(row):lower()] or false), #beds, #crew, table.concat(parts, " ") .. " beds@" .. table.concat(bl, ";") .. (valid(BOT) and string.format(" bot=%.0f,%.0f", loc(BOT).X, loc(BOT).Y) or "")))
@@ -357,6 +385,9 @@ LoopAsync(500, function()
         elseif op == "botgo" then t_botgo(tonumber(n) or 0, tonumber(n2) or 0)     -- walk the bot owner by an offset (AI pathing)
         elseif op == "botfar" then t_botfar(tonumber(n) or 1500)                  -- walk the bot to a navmesh-reachable point ~n uu away
         elseif op == "botback" then t_botback()                                     -- walk the bot back to its crew member's bed
+        elseif op == "botcrew" then if valid(BOT) and crew[1] then local c = loc(crew[1].pawn); BOT:K2_SetActorLocation({X=c.X+120, Y=c.Y, Z=c.Z}, false, {}, true); log(string.format("botcrew -> %.0f,%.0f", c.X+120, c.Y)) end   -- test: put the bot owner next to the first crew member
+        elseif op == "botgift" then BOTGIFT = (n ~= "0"); log("botgift " .. tostring(BOTGIFT))
+        elseif op == "needs" then local r, h = n, n2; for _, m in ipairs(crew) do m.rest = tonumber(r) or m.rest; m.fed = tonumber(h) or m.fed end; log("needs set rest=" .. tostring(r) .. " fed=" .. tostring(h))
         elseif op == "botbed" then t_botbed(tonumber(n) or 150) end               -- cot next to the bot owner
       end)
       if not ok then log("cmd error " .. l .. " " .. tostring(e)) end

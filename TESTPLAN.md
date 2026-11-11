@@ -108,3 +108,18 @@ Fixes from this run: CLASSES only NarrativeNPC_BossAlly (_Heavy/_Sniper spawn wi
 - Bad spot: `bot 400` (-17313,13619) spawns the bot at 0,0,0 and it dies, 3 of 3; cause unverified.
 - Human-only checks left: gym look in game; NPC movement look; player re-test of recruit cooldown; design: should `home` crew re-recruit on owner return (client did, server did not) and should it decay.
 
+
+## 11-11 12:10-12:18 crew needs: rest + fed decide (client gym, agent-vs-agent)
+- User 11-11: "The crew should decide if they want to or not depending how well rested and fed they are". FairCrew: each crew member has rest + fed 0..100 (start 50/50). fed -1 per 30 s always; rest +1 per 6 s at home within 600 uu of the own bed, -1 per 18 s while following; a gift adds fed +40 (gifts.lua has no food/healing split yet, a Bandage feeds too).
+- Settled crew (has a bed) asked by an owner lingering 4 s within 300 uu: rest < 60 -> declines "tired"; fed < 40 and no gift -> declines "hungry"; fed < 40 with gift -> eats it and joins; rested + fed -> joins with no gift. Decline = 30 s cooldown. A follower with a bed whose rest or fed drops below 15 walks home ("went to bed"), keeps the bed. Wild crew (no bed) still needs a gift.
+- Test commands: `needs <rest> <fed>`, `botgift 0|1`, `botcrew`. Script mod/test/needsrows.py. Status shows r= h=.
+  | Row | Result | Evidence (faircrew_log.txt) |
+  |---|---|---|
+  | N1 tired declines | PASS | 12:12:35 declined: tired rest=55 fed=87; joined by itself at 12:13:08 with rest=61 |
+  | N2 hungry, no gift declines | PASS | 12:16:43 declined: hungry rest=85 fed=19 |
+  | N3 hungry + gift eats, joins | PASS | 12:17:16 recruited with Bandage took=true rest=90 fed=58 |
+  | N4 tired follower goes to bed | PASS | 12:14:50 and 12:16:10 went to bed: tired rest=10 fed=80 |
+  | N5 rested + fed joins, no gift | PASS | 12:15:25 recruited with no gift rest=84 fed=79 |
+- Fixed after the run (not re-run): recruit friendship could pass 100 (log showed 107.85), now capped.
+- Not tested: natural decay over real time (values were set by `needs`), "hungry follower goes to bed", player as owner. Numbers are first guesses; feel needs a human.
+
