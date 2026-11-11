@@ -4,8 +4,8 @@ Restart the game first: mods load at game start. Logs: `C:/re/abioticfactor/fair
 
 | # | Do | Expect | Log line |
 |---|---|---|---|
-| 1 | Load a save | FPS number + frame-time graph on screen | `toggle true ok=true` |
-| 2 | Press F8 twice | graph off, then on | two `toggle` lines |
+| 1 | Load a level | FPS text + frame-time bar graph top left | `graph hooked on BP_HUD:ReceiveDrawHUD` |
+| 2 | Press F8 twice | graph off, then on | `toggle false`, `toggle true` |
 | 3 | Play 1 min | | `frame ms avg=...` every 10 s |
 | 4 | Press F9 | scientist appears 3 m ahead | `F9 spawn near player`, `spawn ... ctrl=AI_Controller_NPC_BossAlly...` |
 | 5 | Wait 20 s, empty hands | it wanders around, does NOT join | `crew 1 ...[idle` positions change |
@@ -48,3 +48,11 @@ Standalone `open Facility` (no hosted world, no inventory; the game sat on the j
 Crashes found: (1) Lua `SetText(FText())` kills the game (pilot `text` op removed); (2) F9 in the intro level V_Intro crashed the game 1 s after the spawn (access violation, cause not found); F9 in Facility did not crash in 35 s.
 
 `AfPilot/` is a test-only driver (command file -> console/menu calls). Never ship it enabled.
+
+## FairFps v0.2 re-test, 2026-11-10 22:31-22:34 (real client, Facility)
+| Row | Result | Evidence |
+|---|---|---|
+| 1 graph bars + text | PASS | log `graph hooked on BP_HUD:ReceiveDrawHUD` 22:31:50; screenshot: 120 bars, 60/30 fps lines, "fps 153 avg 167 worst 117 (8 ms)" top left |
+| 2 F8 twice | PASS | graph region 0 lit pixels after 1st F8, 2602 after 2nd; log `toggle false` / `toggle true` |
+| 3 frame-time log | PASS | every 10 s over all frames, e.g. avg 5.8 ms, 1735 frames |
+Note: the graph draws on the HUD canvas, so full-screen menus (job/trait select) cover it.
