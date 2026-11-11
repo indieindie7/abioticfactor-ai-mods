@@ -5,7 +5,7 @@
 --   list <ClassShortName>              full names of live instances
 --   set <Class> <Prop> <value> | sub <Class> <Prop> <Func>   (never pass FText from Lua: SetText(FText()) crashed the game)
 --   prop <ClassShortName> <Property>   tostring of a property on the first instance
---   give <ItemRow> [count] | tp <dx> <dy> [dz] | bed <dx> <dy> | arena [dz]   (test helpers; arena = own test floor + walls + cot)
+--   give <ItemRow> [count] | tp <dx> <dy> [dz] | bed <dx> <dy> | gym [half] | arena [dz]   (test helpers; arena = own test floor + walls + cot)
 local CMD, OUT = "C:/re/abioticfactor/pilot_cmd.txt", "C:/re/abioticfactor/pilot_out.txt"
 local function out(s)
   local f = io.open(OUT, "a"); if f then f:write(os.date("%H:%M:%S ") .. s .. "\n"); f:close() end
@@ -73,6 +73,34 @@ local function run(line)
     local bed = FindFirstOf("World"):SpawnActor(cot, {X = l.X + (tonumber(a) or 200), Y = l.Y + (tonumber(b) or 0), Z = l.Z - 90}, {Pitch = 0, Yaw = 0, Roll = 0})
     local n = bed and bed:IsValid() and bed:K2_GetActorLocation()
     out(n and string.format("bed -> %s at %.0f %.0f %.0f", bed:GetFName():ToString(), n.X, n.Y, n.Z) or "bed -> spawn failed")
+  elseif op == "gym" then    -- gym [half_uu]: test gym on the level's own navmesh floor around the player: 4 cube walls with door gaps, 2 cots, 4 corner posts
+    local p = FindFirstOf("Abiotic_PlayerCharacter_C")
+    if not (p and p:IsValid()) then p = FindFirstOf("PlayerStart") end   -- dedicated test server: no player
+    if not (p and p:IsValid()) then out("gym -> no player or PlayerStart") return end
+    local world = FindFirstOf("World"); local l = p:K2_GetActorLocation()
+    local h = tonumber(a) or 1200; local g = l.Z - 90   -- capsule half height -> floor
+    local SMA = StaticFindObject("/Script/Engine.StaticMeshActor")
+    LoadAsset("/Engine/BasicShapes/Cube.Cube"); local cube = StaticFindObject("/Engine/BasicShapes/Cube.Cube")
+    local n = 0
+    local function box(x, y, sx, sy, sz)   -- engine cube is 100 uu, pivot at its centre
+      local bx = world:SpawnActor(SMA, {X = l.X + x, Y = l.Y + y, Z = g + sz * 50}, {Pitch = 0, Yaw = 0, Roll = 0})
+      if not (bx and bx:IsValid()) then return end
+      local c = bx.StaticMeshComponent; c:SetMobility(2); c:SetStaticMesh(cube); bx:SetActorScale3D({X = sx, Y = sy, Z = sz}); n = n + 1
+    end
+    local seg = (h - 150) / 100            -- each wall = 2 halves with a 3 m door gap in the middle
+    for _, sgn in ipairs({1, -1}) do
+      box(sgn * h, (h + 150) / 2, 0.3, seg, 1.2); box(sgn * h, -(h + 150) / 2, 0.3, seg, 1.2)
+      box((h + 150) / 2, sgn * h, seg, 0.3, 1.2); box(-(h + 150) / 2, sgn * h, seg, 0.3, 1.2)
+      box(sgn * (h - 100), h - 100, 0.4, 0.4, 3); box(sgn * (h - 100), -(h - 100), 0.4, 0.4, 3)   -- corner posts (visual landmarks)
+    end
+    local cp = "/Game/Blueprints/DeployedObjects/Furniture/Deployed_Furniture_Cot_Military"
+    LoadAsset(cp .. ".Deployed_Furniture_Cot_Military"); local cot = StaticFindObject(cp .. ".Deployed_Furniture_Cot_Military_C")
+    local beds = 0
+    for _, y in ipairs({h * 0.6, -h * 0.6}) do
+      local bd = cot and world:SpawnActor(cot, {X = l.X + h * 0.6, Y = l.Y + y, Z = g}, {Pitch = 0, Yaw = 0, Roll = 0})
+      if bd and bd:IsValid() then beds = beds + 1 end
+    end
+    out(string.format("gym -> centre %.0f %.0f %.0f half=%d boxes=%d cots=%d", l.X, l.Y, g, h, n, beds))
   elseif op == "arena" then  -- arena [dz]: test arena from engine cubes (floor 20x20 m, low walls, a cot) dz uu above the player, then put the player on it
     local p = FindFirstOf("Abiotic_PlayerCharacter_C")
     if not (p and p:IsValid()) then out("arena -> no player") return end

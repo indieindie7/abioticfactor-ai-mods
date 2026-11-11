@@ -235,7 +235,10 @@ LoopAsync(math.floor(TICK_S*1000), function()
 end)
 
 -- test keys (v0.2 test build): F9 = spawn a scientist 3 m in front of you, F10 = log crew + your held item
-local function me() local pc = FindFirstOf("PlayerController"); return pc and valid(pc) and pc.Pawn and valid(pc.Pawn) and pc.Pawn or nil end
+local function me()
+  local pc = FindFirstOf("PlayerController"); if pc and valid(pc) and pc.Pawn and valid(pc.Pawn) then return pc.Pawn end
+  if TEST then local ps = FindFirstOf("PlayerStart"); if valid(ps) then return ps end end   -- server gym: no player, anchor on PlayerStart
+end
 local function t_spawn(dist)
   local p = me(); if not p then log("F9: no pawn"); return end
   local l = loc(p); local f = p:GetActorForwardVector()
@@ -256,11 +259,38 @@ function t_bot(dist)
   local b = spawn_one({p}, {X=l.X + f.X*dist, Y=l.Y + f.Y*dist, Z=l.Z}, true); if not valid(b) then return end
   local bl = loc(b); spawn_one({b}, {X=bl.X + 150, Y=bl.Y, Z=bl.Z - 100})
 end
+-- 11-11 bot walker: runs 1-4 the bot owner got r=2 from MoveToLocation and stood still. Stop its behaviour tree, re-issue the move every
+-- second, and if it still has not moved 50 uu in 2 s, glide it (K2_SetActorLocation, 600 uu/s straight line; test-only, bot owner only).
+local BG = nil   -- {dest, accept, t, last={X,Y}, stuck, glide}
+local function bot_goal(dest, accept)
+  if not valid(BOT) then return end
+  pcall(function() local bc = BOT.Controller.BrainComponent; if valid(bc) and bc:IsRunning() then bc:StopLogic("FairCrew bot owner"); log("bot BT stopped") end end)
+  pcall(function() local cm = BOT.CharacterMovement; if not cm:IsComponentTickEnabled() then cm:SetComponentTickEnabled(true) end; if cm.MovementMode == 0 then cm:SetMovementMode(1, 0) end end)
+  local l = loc(BOT); BG = {dest = dest, accept = accept or 50, t = 0, last = {X = l.X, Y = l.Y}, stuck = 0, glide = false}
+  return move_to(BOT, dest, BG.accept)
+end
+LoopAsync(100, function()
+  ExecuteInGameThread(function() pcall(function()
+    if not BG then return end
+    if not valid(BOT) then BG = nil; return end
+    local l = loc(BOT); local dx, dy = BG.dest.X - l.X, BG.dest.Y - l.Y; local d = math.sqrt(dx*dx + dy*dy)
+    if d <= BG.accept + 30 then log(string.format("bot arrived %.0f,%.0f glide=%s", l.X, l.Y, tostring(BG.glide))); BG = nil; return end
+    BG.t = BG.t + 1
+    if BG.glide then
+      local st = math.min(60, d); BOT:K2_SetActorLocation({X = l.X + dx/d*st, Y = l.Y + dy/d*st, Z = l.Z + (BG.dest.Z + 90 - l.Z) * st/d}, false, {}, true)
+    elseif BG.t % 10 == 0 then
+      local mv = math.sqrt((l.X-BG.last.X)^2 + (l.Y-BG.last.Y)^2); BG.last = {X = l.X, Y = l.Y}
+      if mv < 50 then BG.stuck = BG.stuck + 1 else BG.stuck = 0 end
+      if BG.stuck >= 2 then BG.glide = true; log(string.format("bot stuck at %.0f,%.0f (%.0f uu to go): glide", l.X, l.Y, d)) else move_to(BOT, BG.dest, BG.accept) end
+    end
+  end) end)
+  return false
+end)
 function t_botgo(dx, dy)
   if not valid(BOT) then log("botgo: no bot"); return end
   -- 11-10 run 1: bot stood still (not in crew, so the MOVE_None fix in tick() never touched it)
   pcall(function() local cm = BOT.CharacterMovement; if not cm:IsComponentTickEnabled() then cm:SetComponentTickEnabled(true) end; if cm.MovementMode == 0 then cm:SetMovementMode(1, 0) end end)
-  local l = loc(BOT); local ok, r, direct = move_to(BOT, {X=l.X+dx, Y=l.Y+dy, Z=l.Z}, 50.0)
+  local l = loc(BOT); local ok, r, direct = bot_goal({X=l.X+dx, Y=l.Y+dy, Z=l.Z-90}, 50.0)
   log(string.format("botgo %.0f %.0f from %.0f,%.0f ok=%s r=%s direct=%s ctrl=%s", dx, dy, l.X, l.Y, tostring(ok), tostring(r), tostring(direct), tostring(valid(BOT.Controller))))
 end
 -- 11-10 run 2: botgo offsets had no navmesh path (direct walk stopped after ~90 uu); pick reachable points instead
@@ -273,14 +303,17 @@ function t_botfar(dist)
     local ok, hit = pcall(function() return nav:K2_GetRandomReachablePointInRadius(world, o, out, dist * 1.3, nil, nil) end)
     if ok and hit and out.X then local dd = d2(out, o); if dd > bd then best, bd = {X=out.X, Y=out.Y, Z=out.Z}, dd end end
   end
-  if not best then log("botfar: no reachable point"); return end
+  if not best then   -- 11-11 server gym: PlayerStart area has no navmesh -> glide straight along +X instead of giving up
+    bot_goal({X=o.X+dist, Y=o.Y, Z=o.Z-90}, 50.0); if BG then BG.glide = true end
+    log(string.format("botfar %.0f: no reachable point, glide +X", dist)); return
+  end
   pcall(function() local cm = BOT.CharacterMovement; if cm.MovementMode == 0 then cm:SetMovementMode(1, 0) end end)
-  local ok, r, direct = move_to(BOT, best, 50.0)
+  local ok, r, direct = bot_goal(best, 50.0)
   log(string.format("botfar %.0f -> %.0f,%.0f (%.0f uu) r=%s direct=%s", dist, best.X, best.Y, math.sqrt(bd), tostring(r), tostring(direct)))
 end
 function t_botback()
   if not valid(BOT) then return end
-  for _, m in ipairs(crew) do if m.bed and alive(m.bed) then local b = loc(m.bed); local ok, r = move_to(BOT, {X=b.X+100, Y=b.Y, Z=b.Z+90}, 50.0); log("botback r=" .. tostring(r)); return end end
+  for _, m in ipairs(crew) do if m.bed and alive(m.bed) then local b = loc(m.bed); local ok, r = bot_goal({X=b.X+100, Y=b.Y, Z=b.Z}, 50.0); log("botback r=" .. tostring(r)); return end end
   log("botback: no crew bed")
 end
 function t_botbed(dx)

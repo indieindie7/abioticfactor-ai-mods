@@ -78,3 +78,17 @@ Fixes from this run: CLASSES only NarrativeNPC_BossAlly (_Heavy/_Sniper spawn wi
   - Row 6 PASS (bot recruits crew), row 9 PASS (bot at cot -> `moved in`), cooldown PASS (no re-recruit inside 30 s).
   - Rows 7/10/11/12 NOT RUN: the bot NPC never walks. MoveToLocation returns 2 (request ok) but the pawn stays put; pathfinding request fails first (direct=true). Cause unverified (likely the BossAlly behaviour tree overrides the move).
   - Run 4 log shows 4 F9 spawns at 23:53:39-41 and the player moving: not from the driver (keyboard input on the test client).
+
+## 11-11 07:32-07:54 gym + bot walker (dedicated test server)
+- New: AfPilot `gym [half]` (default 1200 uu): 8 wall halves with 3 m door gaps + 4 corner posts (engine cubes) + 2 cots around the player, or around PlayerStart when there is no player. FairCrew bot walker `bot_goal`: StopLogic on the bot's BrainComponent, MoveToLocation re-issued each 1 s, stuck <50 uu for 2 s -> glide (K2_SetActorLocation, 600 uu/s, test bot only); `botfar` with no reachable navmesh point glides +X. Runner mod/tools/srvgym.ps1 + `botrows.py srv`.
+- Client runs 07:32 + 07:35: UE4SS died in init, "Fatal Error: [FName::StaticAlignment] StaticAlignment_Private is not valid" (ASLR coin flip per boot, NOTES 11-10 12:10). Same ASLR-off patch on the client exe was BLOCKED by the auto-mode classifier; client exe untouched, no .bak-aslr. Client mod tests are off until a reboot re-rolls it or the user allows the patch.
+- Server run 2 (srvgym_out2.txt), gym centre -14748 15992 21565, boxes=12 cots=2, all agent-vs-agent:
+  | Row | Result | Evidence |
+  |---|---|---|
+  | 6 recruit | PASS | 07:47:31 recruited with Bandage friend=60 |
+  | 7 follow 15 m | PASS | bot glided to -12870; crew `follow` at -12916 (from -14198) |
+  | 9 bed move-in | PASS | 07:48:06 moved in, state home |
+  | 10 stays home | PASS | bot at -8932 (3.9 k uu away), crew `home` at -12870,15721 |
+  | 11 owner back | observed | bot back 07:48:56, crew stays `home` f=63, no re-recruit in 32 s |
+  | 12 decay | not shown | crew in `home` kept f=63 for 4 min with the bot 4.5-9 k uu away; decay/"went home" only seen from `follow` (11-10 player run) |
+- Open: the bot walked only by glide (MoveToLocation r=2 after StopLogic still no motion, and no navmesh at the server PlayerStart: "no reachable point"). Last status shows bot=0,0 after gliding 9 k uu +X (bot gone, cause unverified). An extra crew entry `idle f=0` wanders the gym (identity unverified). Gym look is unverified (no screenshot: server has no renderer).
