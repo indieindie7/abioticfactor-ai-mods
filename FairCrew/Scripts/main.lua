@@ -32,6 +32,13 @@ local GIFT_FED      = 40     -- a gift item adds this much fed (gifts.lua does n
 local JOIN_REST     = 60     -- settled crew joins the owner only when rest >= this ...
 local JOIN_FED      = 40     -- ... and fed >= this (a gift is eaten first when hungry)
 local QUIT_NEED     = 15     -- a follower with a bed walks home when rest or fed drops below this
+-- jobs (user 11-12: "Porter and guard could be useful lets have them tested too"; kept small, crew_jobs_plan.md 9 + 10)
+local JOB_DRAIN     = {porter = 1.5, guard = 1.2}   -- rest drain multiplier while working
+local BAG_CAP       = 12     -- items a porter carries
+local BASE_UU       = 800    -- owner this close to the porter's bed = "back at base", porter unloads
+local BOX_UU        = 1500   -- storage box this close to the porter's bed is used
+local GUARD_UU      = 1500   -- guard reacts to an enemy this close to its bed
+local GUARD_STEP    = 400    -- guard stands at most this far out from the bed, on the line bed -> enemy
 local BED_WANDER_UU = 400    -- settled scientists wander this close to their bed
 local BED_CLASSES = {"Deployed_Furniture_Bed_ParentBP_C", "Deployed_Furniture_Cot_Military_C", "Deployed_VOTV_Mattress_C", "Deployed_VOTV_SleepingBag_C"}
 local DIR = (debug.getinfo(1, "S").source:match("^@(.*)main%.lua$") or "")
@@ -133,7 +140,7 @@ local function spawn_one(pl, at, as_bot)
     log("nav invoker " .. tostring(okr) .. (okr and "" or (" " .. tostring(er))))
   end
   if as_bot then BOT = a; AUTOSPAWN = false; log(string.format("bot owner %s at %.0f %.0f", name, l.X, l.Y)); return a end
-  crew[#crew+1] = {pawn=a, home={X=l.X, Y=l.Y, Z=l.Z}, owner=nil, friend=0, near_s=0, wander_t=0, name=name, rest=50, fed=50}
+  crew[#crew+1] = {pawn=a, home={X=l.X, Y=l.Y, Z=l.Z}, owner=nil, friend=0, near_s=0, wander_t=0, name=name, rest=50, fed=50, bag={}, bagn=0}
   log(string.format("spawn %s at %.0f %.0f %.0f ctrl=%s", name, l.X, l.Y, l.Z, tostring(valid(a.Controller) and a.Controller:GetClass():GetFName():ToString())))
 end
 
@@ -180,6 +187,82 @@ local function free_bed_near(pos, r)
   end
 end
 
+-- ---- jobs ----
+-- Porter v1: the bag is a mod-side list (row -> count). Only the bot owner can hand items over (virtual held item,
+-- command "bothold"): taking real items from a player is OFF until a tested call exists that puts them into a box.
+-- The box is a ledger too (BOXES); what is tested is the behaviour: carry, walk to the box at base, unload.
+local BOTHOLD = nil    -- {row=, n=}
+local BOXES = {}       -- [box key] = {row = n}
+local function porter_item(p) if p == BOT and BOTHOLD and BOTHOLD.n > 0 then return BOTHOLD.row end end
+local function porter_step(m, here, o, dd)   -- true = porter is busy walking to the box (no follow move this tick)
+  m.bag = m.bag or {}; m.bagn = m.bagn or 0
+  if m.bagn > 0 and m.last then m.walk = (m.walk or 0) + math.sqrt(d2(here, m.last)) end
+  m.last = {X=here.X, Y=here.Y, Z=here.Z}
+  local row = porter_item(m.owner)
+  if row and dd < RECRUIT_UU*RECRUIT_UU and m.bagn < BAG_CAP and not m.unload then
+    m.give_s = (m.give_s or 0) + TICK_S
+    if m.give_s >= RECRUIT_S then
+      m.give_s = 0; BOTHOLD.n = BOTHOLD.n - 1; m.bag[row] = (m.bag[row] or 0) + 1; m.bagn = m.bagn + 1
+      log(string.format("porter %s took %s bag=%d owner has %d left", m.name, row, m.bagn, BOTHOLD.n))
+    end
+  else m.give_s = 0 end
+  if m.bagn > 0 and m.bed and d2(o, m.home) < BASE_UU*BASE_UU then
+    local box, bd
+    for _, b in ipairs(FindAllOf("Deployed_Container_ParentBP_C") or {}) do
+      if alive(b) then local x = d2(loc(b), m.home); if x < BOX_UU*BOX_UU and (not bd or x < bd) then box, bd = b, x end end
+    end
+    if not box then if not m.nobox then m.nobox = true; log("porter " .. m.name .. ": no box near home, keeps carrying") end; m.unload = nil; return false end
+    m.nobox = nil
+    local bl = loc(box); local gx, gy = here.X-bl.X, here.Y-bl.Y; local gap = math.sqrt(gx*gx+gy*gy)   -- flat distance: box origin sits at floor height
+    if gap < 220 then
+      local k = bed_key(box); BOXES[k] = BOXES[k] or {}
+      for r, n in pairs(m.bag) do BOXES[k][r] = (BOXES[k][r] or 0) + n end
+      log(string.format("porter %s unloaded %d items into box %s, walked %.0f uu with load", m.name, m.bagn, k, m.walk or 0))
+      m.bag, m.bagn, m.walk, m.unload, m.ugap, m.ustall = {}, 0, 0, nil, nil, nil
+      return false
+    end
+    if not m.unload then m.unload = true; log(string.format("porter %s unload start: box %.0f uu away, bag=%d", m.name, gap, m.bagn)) end
+    local ok, r, direct = move_to(m.pawn, {X=bl.X, Y=bl.Y, Z=here.Z}, 100.0)
+    if m.ugap and m.ugap - gap < 20 then m.ustall = (m.ustall or 0) + 1 else m.ustall = 0 end
+    m.ugap = gap
+    if m.ustall == 8 then log(string.format("porter %s stalled %.0f uu from box (move r=%s direct=%s), keeps trying", m.name, gap, tostring(r), tostring(direct))) end
+    return true
+  end
+  m.unload, m.ugap, m.ustall = nil, nil, nil
+  return false
+end
+
+-- Guard v1: no damage. With an enemy inside GUARD_UU of its bed it stands on the line bed -> enemy.
+local function enemy_near(m)
+  local skip = {}
+  for _, c in ipairs(crew) do skip[bed_key(c.pawn)] = true end
+  if valid(BOT) then skip[bed_key(BOT)] = true end
+  local best, bd, bn
+  for _, e in ipairs(FindAllOf("NPC_Base_ParentBP_C") or {}) do
+    if alive(e) and not skip[bed_key(e)] then
+      local okc, cn = pcall(function() return e:GetClass():GetFName():ToString() end)
+      if okc and cn and not cn:find("NarrativeNPC") then
+        local dd = d2(loc(e), m.home)
+        if dd < GUARD_UU*GUARD_UU and (not bd or dd < bd) then best, bd, bn = e, dd, cn end
+      end
+    end
+  end
+  return best, bd, bn
+end
+local function guard_step(m, here)
+  local e, dd, cn = enemy_near(m)
+  if not e then if m.post then m.post = nil; m.wander_t = 0; log("guard clear " .. m.name) end; return end
+  local el = loc(e); local d = math.sqrt(dd); local s = math.min(GUARD_STEP, d*0.5) / math.max(d, 1)
+  local post = {X=m.home.X + (el.X-m.home.X)*s, Y=m.home.Y + (el.Y-m.home.Y)*s, Z=m.home.Z}
+  move_to(m.pawn, post, 50.0); m.wander_t = clock + 6
+  if not m.post or clock - (m.post_t or 0) >= 6 then
+    m.post_t = clock
+    local dx, dy = here.X-post.X, here.Y-post.Y
+    log(string.format("guard post %s: enemy %s %.0f uu from bed, post %.0f,%.0f, crew %.0f uu off post", m.name, cn, d, post.X, post.Y, math.sqrt(dx*dx+dy*dy)))
+  end
+  m.post = post
+end
+
 local function tick()
   clock = clock + TICK_S
   crumb("t alive"); for i = #crew, 1, -1 do if not alive(crew[i].pawn) then log("lost " .. crew[i].name); if crew[i].bedkey then claimed[crew[i].bedkey] = nil end; table.remove(crew, i) end end
@@ -197,8 +280,17 @@ local function tick()
     crumb("t m owner")
     if m.owner and not valid(m.owner) then m.owner = nil end
     m.fed = math.max(0, m.fed - TICK_S/FED_DOWN_S)
-    if m.owner then m.rest = math.max(0, m.rest - TICK_S/REST_DOWN_S)
+    local on_guard = m.job == "guard" and m.bed and not m.owner and not m.off
+    if m.owner then m.rest = math.max(0, m.rest - TICK_S/REST_DOWN_S * (JOB_DRAIN[m.job or ""] or 1))
+    elseif on_guard then m.rest = math.max(0, m.rest - TICK_S/REST_DOWN_S * JOB_DRAIN.guard)   -- on duty = no rest
     elseif m.bed and d2(here, m.home) < 600*600 then m.rest = math.min(100, m.rest + TICK_S/REST_UP_S) end
+    if m.job == "guard" and m.bed and not m.owner then
+      if not m.off and (m.rest < QUIT_NEED or m.fed < QUIT_NEED) then
+        m.off = true; on_guard = false; m.post = nil; m.wander_t = 0
+        log(string.format("guard off duty %s: %s rest=%.0f fed=%.0f", m.name, m.rest < QUIT_NEED and "tired" or "hungry", m.rest, m.fed))
+      elseif m.off and m.rest >= JOIN_REST and m.fed >= JOIN_FED then m.off = false; log("guard back on duty " .. m.name) end
+    end
+    if on_guard then crumb("t m guard"); guard_step(m, here) end
     if not m.owner then
       -- idle: AC-style wander around home; recruit when a player lingers close
       local best, bd
@@ -237,7 +329,8 @@ local function tick()
       -- following: walk after the owner; friendship grows near, decays when left behind
       crumb("t m ownerloc"); local o = loc(m.owner); local dd = d2(here, o)
       crumb("t m follow")
-      if dd > FOLLOW_UU*FOLLOW_UU then move_to(m.pawn, o, FOLLOW_UU*0.5) end
+      crumb("t m porter"); local busy = m.job == "porter" and porter_step(m, here, o, dd)
+      if not busy and dd > FOLLOW_UU*FOLLOW_UU then move_to(m.pawn, o, FOLLOW_UU*0.5) end
       if dd < 1500*1500 then m.friend = math.min(100, m.friend + TICK_S/10)
       elseif dd > LEFT_UU*LEFT_UU then m.friend = m.friend - TICK_S/2 end
       if m.bed and (m.rest < QUIT_NEED or m.fed < QUIT_NEED) then
@@ -276,7 +369,7 @@ local function crew_step()
     ticks = ticks + 1
     if ticks % 20 == 0 then
       local parts = {}
-      for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f r=%.0f h=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), m.owner and "follow" or (m.bed and "home" or "idle"), m.friend, m.rest, m.fed, l.X, l.Y) end
+      for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f r=%.0f h=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), (m.owner and "follow" or (m.bed and "home" or "idle")) .. (m.job and ("/" .. m.job .. ((m.bagn or 0) > 0 and (":" .. m.bagn) or "") .. (m.off and ":off" or "")) or ""), m.friend, m.rest, m.fed, l.X, l.Y) end
       log("crew " .. #crew .. " " .. table.concat(parts, " "))
     end
   end
@@ -297,7 +390,7 @@ end
 local function t_status()
   local p = me(); local row = p and (pcall(function() return p.CurrentItemRow:ToString() end) and p.CurrentItemRow:ToString()) or "?"
   local parts = {}
-  for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f r=%.0f h=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), m.owner and "follow" or (m.bed and "home" or "idle"), m.friend, m.rest, m.fed, l.X, l.Y) end
+  for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f r=%.0f h=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), (m.owner and "follow" or (m.bed and "home" or "idle")) .. (m.job and ("/" .. m.job .. ((m.bagn or 0) > 0 and (":" .. m.bagn) or "") .. (m.off and ":off" or "")) or ""), m.friend, m.rest, m.fed, l.X, l.Y) end
   local pl = p and loc(p) or {X=0, Y=0}
   local bl = {}; for _, b in ipairs(beds) do local q = loc(b); bl[#bl+1] = string.format("%.0f,%.0f,%.0f", q.X, q.Y, q.Z) end
   log(string.format("F10 me=%.0f,%.0f held=%s gift=%s beds=%d crew %d %s", pl.X, pl.Y, tostring(row), tostring(GIFTS[tostring(row):lower()] or false), #beds, #crew, table.concat(parts, " ") .. " beds@" .. table.concat(bl, ";") .. (valid(BOT) and string.format(" bot=%.0f,%.0f", loc(BOT).X, loc(BOT).Y) or "")))
@@ -416,6 +509,23 @@ end
 RegisterKeyBind(Key.F9, function() ExecuteInGameThread(function() pcall(t_spawn, 300) end) end)
 RegisterKeyBind(Key.F10, function() ExecuteInGameThread(function() pcall(t_status) end) end)
 -- test command file (no focus needed): lines "spawn <uu>" | "status"
+-- job tests: spawn a storage chest / an enemy at an offset from the first crew member's home
+local ENEMIES = {}
+local function t_thing(path, dx, dz, is_enemy)
+  local m = crew[1]; if not m then log("thing: no crew"); return end
+  local name = path:match("([^/]+)$")
+  LoadAsset(path .. "." .. name); local cls = StaticFindObject(path .. "." .. name .. "_C")
+  if not valid(cls) then log("thing: no class " .. name); return end
+  local at = {X=m.home.X + dx, Y=m.home.Y, Z=m.home.Z + dz}
+  local a = FindFirstOf("World"):SpawnActor(cls, at, {Pitch=0, Yaw=0, Roll=0})
+  if not valid(a) then log("thing: spawn failed " .. name); return end
+  if is_enemy then
+    if not valid(a.Controller) then pcall(function() a:SpawnDefaultController() end) end
+    ENEMIES[#ENEMIES+1] = a
+  end
+  local al = loc(a)
+  log(string.format("thing %s at %.0f,%.0f,%.0f (asked %.0f,%.0f) ctrl=%s", name, al.X, al.Y, al.Z, at.X, at.Y, tostring(is_enemy and valid(a.Controller))))
+end
 local TCMD = "C:/re/abioticfactor/faircrew_cmd.txt"
 local function cmd_step()
   local f = io.open(TCMD, "r"); if not f then return end
@@ -433,6 +543,12 @@ local function cmd_step()
         elseif op == "botcrew" then if valid(BOT) and crew[1] then local c = loc(crew[1].pawn); BOT:K2_SetActorLocation({X=c.X+120, Y=c.Y, Z=c.Z}, false, {}, true); log(string.format("botcrew -> %.0f,%.0f", c.X+120, c.Y)) end   -- test: put the bot owner next to the first crew member
         elseif op == "botgift" then BOTGIFT = (n ~= "0"); log("botgift " .. tostring(BOTGIFT))
         elseif op == "needs" then local r, h = n, n2; for _, m in ipairs(crew) do m.rest = tonumber(r) or m.rest; m.fed = tonumber(h) or m.fed end; log("needs set rest=" .. tostring(r) .. " fed=" .. tostring(h))
+        elseif op == "job" then local m = crew[tonumber(n2) or 1]; if m then m.job = (n ~= "none" and n ~= "") and n or nil; m.off = false; m.post = nil; m.unload = nil; log("job " .. m.name .. " = " .. tostring(m.job)) end
+        elseif op == "bothold" then BOTHOLD = {row = n, n = tonumber(n2) or 1}; log("bothold " .. n .. " x" .. BOTHOLD.n)   -- bot owner holds n virtual items for the porter
+        elseif op == "box" then t_thing("/Game/Blueprints/DeployedObjects/Furniture/Deployed_Container_Chest_Vintage", tonumber(n) or 300, -90, false)
+        elseif op == "enemy" then t_thing("/Game/Blueprints/Characters/NPCs/NPC_Peccary_Sow", tonumber(n) or 1000, 100, true)
+        elseif op == "enemykill" then for _, e in ipairs(ENEMIES) do pcall(function() if alive(e) then e:K2_DestroyActor() end end) end; log("enemykill " .. #ENEMIES); ENEMIES = {}
+        elseif op == "boxes" then for k, t in pairs(BOXES) do local parts = {}; for r, c in pairs(t) do parts[#parts+1] = r .. "=" .. c end; log("box " .. k .. " " .. table.concat(parts, " ")) end
         elseif op == "botbed" then t_botbed(tonumber(n) or 150) end               -- cot next to the bot owner
       end)
       if not ok then log("cmd error " .. l .. " " .. tostring(e)) end

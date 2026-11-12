@@ -156,3 +156,13 @@ Verdict: Lua VM crash not seen in 55.7 min on the pump build = PARTIAL (one run;
 Rules learned: never run engine-calling code directly inside a RegisterHook callback (hang); keep Lua work out of LoopAsync threads.
 
 Run 8 (18:22-19:23, committed build a8885f7, stress.py 60): alive, 387 commands, 60.2 min, no new crash folder, pump fed by the async watchdog once (at start). Two long runs (55.7 and 60.2 min) without the Lua VM crash; longest earlier time-to-crash 20.2 min. Cause (Lua state race) still a hypothesis.
+
+Porter + Guard v1 (11-12, FairCrew, user: "Porter and guard could be useful lets have them tested too"), client gym, bot owner, mod/test/jobs_test.py:
+| Row | Check | Result |
+|---|---|---|
+| J1 | Porter takes items from the bot owner (virtual `bothold Scrap 3`), one per 4 s within 300 uu | PASS (3 "took Scrap" lines, jobs_out2.txt 19:45-19:46) |
+| J2 | Porter walks to the storage chest near its bed when the owner is within 800 uu of the bed, unloads | PASS (walked 261 + 97 uu with load; ledger `box ... Scrap=3`). Test 1 FAIL: stood still 2.5 min, aimed at the chest's floor-height origin; fixed with flat distance + pawn-height target |
+| J3 | Guard at home stands on the line bed -> enemy (spawned NPC_Peccary_Sow), max 400 uu out | PASS ("crew 0 uu off post" within 6 s, follows the sow as it moves) |
+| J4 | Guard clears when the enemy is gone; off duty below need 15; back on at rest 60 / fed 40 | PASS (guard clear, off duty tired rest=10, back on duty) |
+| J5 | Stress with job commands (`stress.py 20 jobs`) | alive 21.5 min, 51 commands, no new crash folder (stress_out9.txt). Command count is lower than earlier runs; cause unverified |
+Limits (not built): Porter bag and box are mod-side lists, no real inventory items move, a real player cannot hand items over (no probed inventory call). In J1/J2 the bot stayed within 800 uu of the bed, so items were unloaded one by one, not as a batch of 3. Guard deals no damage and does not draw the enemy's attention; whether enemies react to it is untested. Gift-picks-job mapping not built; jobs are set by the `job` test command only.
