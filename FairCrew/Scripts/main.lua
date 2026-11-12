@@ -40,6 +40,8 @@ local GIFTS = dofile(DIR .. "gifts.lua")   -- food + healing item rows (lower-ca
 local function log(s) local f = io.open(LOG, "a"); if f then f:write(os.date("%H:%M:%S ") .. s .. "\n"); f:close() end end
 log("loaded" .. (TEST and " (server test)" or ""))
 
+-- crash breadcrumb: last step reached, read after a client crash (C:/re/abioticfactor/faircrew_crumb.txt)
+local function crumb(c) local f = io.open("C:/re/abioticfactor/faircrew_crumb.txt", "w"); if f then f:write(os.date("%H:%M:%S ") .. c); f:close() end end
 local function loc(a) return a:K2_GetActorLocation() end
 local function d2(a, b) local x, y, z = a.X-b.X, a.Y-b.Y, a.Z-b.Z; return x*x+y*y+z*z end
 local function valid(o) return o and o:IsValid() end
@@ -71,17 +73,18 @@ local function players()
 end
 
 local function move_to(pawn, dest, accept)
-  local c = pawn.Controller
+  crumb("move_to controller"); local c = pawn.Controller
   if not valid(c) then return end
+  crumb("move_to MoveToLocation path")
   -- EPathFollowingRequestResult: 0 Failed, 1 AlreadyAtGoal, 2 RequestSuccessful
   local ok, r = pcall(function() return c:MoveToLocation(dest, accept, true, true, true, false, nil, true) end)
   local direct = false
   if not ok or r == 0 then   -- no path (no navmesh here): walk straight instead of standing still
-    direct = true
+    direct = true; crumb("move_to MoveToLocation direct")
     ok, r = pcall(function() return c:MoveToLocation(dest, accept, true, false, false, false, nil, true) end)
   end
   if SELFTEST and movelog < 6 then movelog = movelog + 1; log("move ok=" .. tostring(ok) .. " r=" .. tostring(r) .. " direct=" .. tostring(direct)) end
-  return ok, r, direct
+  crumb("move_to done"); return ok, r, direct
 end
 
 local function spawn_one(pl, at, as_bot)
@@ -257,7 +260,7 @@ end
 local ticks = 0
 LoopAsync(math.floor(TICK_S*1000), function()
   ExecuteInGameThread(function()
-    local ok, err = pcall(tick); if not ok then log("tick error " .. tostring(err)) end
+    crumb("tick"); local ok, err = pcall(tick); if not ok then log("tick error " .. tostring(err)) end; crumb("tick end")
     if SELFTEST and not SELF then selftest_load() end
     if SELF then local ok2, err2 = pcall(SELF, clock); if not ok2 then log("selftest error " .. tostring(err2)) end end
     ticks = ticks + 1
@@ -304,30 +307,62 @@ function t_bot(dist)
 end
 -- 11-11 bot walker: runs 1-4 the bot owner got r=2 from MoveToLocation and stood still. Stop its behaviour tree, re-issue the move every
 -- second, and if it still has not moved 50 uu in 2 s, glide it (K2_SetActorLocation, 600 uu/s straight line; test-only, bot owner only).
+local HEAD = {45, -45, 90, -90, 135, -135}   -- detour headings, degrees off the goal direction
 local BG = nil   -- {dest, accept, t, last={X,Y}, stuck, glide}
 local function bot_goal(dest, accept)
   if not valid(BOT) then return end
   pcall(function() local bc = BOT.Controller.BrainComponent; if valid(bc) and bc:IsRunning() then bc:StopLogic("FairCrew bot owner"); log("bot BT stopped") end end)
   pcall(function() local cm = BOT.CharacterMovement; if not cm:IsComponentTickEnabled() then cm:SetComponentTickEnabled(true) end; if cm.MovementMode == 0 then cm:SetMovementMode(1, 0) end end)
-  local l = loc(BOT); BG = {dest = dest, accept = accept or 50, t = 0, last = {X = l.X, Y = l.Y}, stuck = 0, glide = false}
+  local l = loc(BOT); BG = {dest = dest, accept = accept or 50, t = 0, last = {X = l.X, Y = l.Y}, stuck = 0, glide = false, ndet = 0, spots = {}}
   return move_to(BOT, dest, BG.accept)
 end
 LoopAsync(100, function()
   ExecuteInGameThread(function() pcall(function()
     if not BG then return end
-    if not valid(BOT) then BG = nil; return end
-    local l = loc(BOT); local dx, dy = BG.dest.X - l.X, BG.dest.Y - l.Y; local d = math.sqrt(dx*dx + dy*dy)
+    crumb("walk valid"); if not valid(BOT) then BG = nil; return end
+    crumb("walk loc"); local l = loc(BOT); crumb("walk modefix"); local dx, dy = BG.dest.X - l.X, BG.dest.Y - l.Y; local d = math.sqrt(dx*dx + dy*dy)
     if d <= BG.accept + 30 then log(string.format("bot arrived %.0f,%.0f glide=%s t=%.1fs modefix=%d", l.X, l.Y, tostring(BG.glide), BG.t/10, BG.mfix or 0)); BG = nil; return end
     BG.t = BG.t + 1
     -- crew get this every tick() (line ~162); the bot is not in crew, and the game drops idle NPCs back to MOVE_None
     pcall(function() local cm = BOT.CharacterMovement; if not cm:IsComponentTickEnabled() then cm:SetComponentTickEnabled(true) end; if cm.MovementMode == 0 then cm:SetMovementMode(1, 0); BG.mfix = (BG.mfix or 0) + 1 end end)
-    if BG.glide then
+    crumb("walk steer"); if BG.glide then
       local st = math.min(60, d); BOT:K2_SetActorLocation({X = l.X + dx/d*st, Y = l.Y + dy/d*st, Z = l.Z + (BG.dest.Z + 90 - l.Z) * st/d}, false, {}, true)
     elseif BG.t % 10 == 0 then
       local mv = math.sqrt((l.X-BG.last.X)^2 + (l.Y-BG.last.Y)^2); BG.last = {X = l.X, Y = l.Y}
-      if mv < 50 then BG.stuck = BG.stuck + 1 else BG.stuck = 0 end
-      if BG.stuck >= 4 then BG.glide = true; log(string.format("bot stuck at %.0f,%.0f (%.0f uu to go, mode fixes %d): glide", l.X, l.Y, d, BG.mfix or 0)) else move_to(BOT, BG.dest, BG.accept) end
+      local D = BG.det
+      if D then   -- detour leg (autonav style: candidate headings, smallest turn first, judged by measured progress)
+        D.t = D.t + 1
+        local gone = math.sqrt((l.X-D.from.X)^2 + (l.Y-D.from.Y)^2)
+        local left = math.sqrt((l.X-D.sub.X)^2 + (l.Y-D.sub.Y)^2)
+        if left < 90 or D.t >= D.lim or (D.t >= 2 and mv < 50) then
+          BG.det = nil
+          if gone >= 200 then
+            log(string.format("bot detour %+d ok: moved %.0f of %.0f uu, %.0f to go", HEAD[D.sp.hi], gone, D.leg, d)); BG.stuck = 0; BG.ndet = BG.ndet + 1; move_to(BOT, BG.dest, BG.accept)
+          else
+            log(string.format("bot detour %+d blocked: moved %.0f uu", HEAD[D.sp.hi], gone)); D.sp.hi = D.sp.hi + 1; D.sp.n = 0; BG.stuck = 99
+          end
+        end
+      else
+        if mv < 50 then BG.stuck = BG.stuck + 1 else BG.stuck = 0 end
+        if BG.stuck >= 4 then
+          -- spot memory: stuck again where a detour was already tried -> same heading, longer leg (400, 800, 1200), then the next heading
+          local sp = nil
+          for _, q in ipairs(BG.spots) do if (l.X-q.X)^2 + (l.Y-q.Y)^2 < 150*150 then sp = q end end
+          if sp then sp.n = sp.n + 1; if sp.n > 2 then sp.n = 0; sp.hi = sp.hi + 1 end
+          else sp = {X = l.X, Y = l.Y, hi = 1, n = 0}; BG.spots[#BG.spots + 1] = sp end
+          if sp.hi > #HEAD or BG.ndet >= 16 then
+            BG.glide = true; log(string.format("bot stuck at %.0f,%.0f (%.0f uu to go, mode fixes %d, detours ok %d, spots %d): glide", l.X, l.Y, d, BG.mfix or 0, BG.ndet, #BG.spots))
+          else
+            local leg = 400 * (sp.n + 1)
+            local a = math.atan(dy, dx) + math.rad(HEAD[sp.hi])
+            local sub = {X = l.X + math.cos(a)*leg, Y = l.Y + math.sin(a)*leg, Z = l.Z}
+            BG.det = {sub = sub, from = {X = l.X, Y = l.Y}, t = 0, sp = sp, leg = leg, lim = math.ceil(leg/120) + 1}
+            log(string.format("bot stuck at %.0f,%.0f (%.0f uu to go): detour %+d leg %d", l.X, l.Y, d, HEAD[sp.hi], leg)); move_to(BOT, sub, 40)
+          end
+        elseif BG.stuck >= 1 then move_to(BOT, BG.dest, BG.accept) end   -- re-issue only when not moving (a re-issue every second restarts the move)
+      end
     end
+    crumb("walk end")
   end) end)
   return false
 end)
