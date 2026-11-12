@@ -134,3 +134,23 @@ User: "Lets test autonav please". Walker (FairCrew main.lua): stuck 4 s -> detou
 - Crashes: 2 of 4 runs, access violation inside UE4SS on the game thread from a Lua callback (Saved/Crashes/UECC-Windows-FDC203A349AA4926BCCA458602CA8C5E_0000, ...A274B82044900BFB84697DBA117F98AF_0000). Cause unverified; did not recur in run 4 with breadcrumbs (crumb(), flag CRUMBS, file faircrew_crumb.txt). Not seen in the 11-11 runs.
 - Hungry follower (hungry.py, run 4): PASS "went to bed ... hungry rest=80 fed=10" 14:25:11; PASS "declined ... hungry rest=84 fed=9" 14:25:44 (botgift 0). Rest rose 46 -> 84 at home, fed fell 10 -> 9 in real time (status lines). Join with no gift after needs 100 100 not shown here (crew was already following).
 - Lesson: check nvidia-smi before a client run; at ~2 fps walk tests are meaningless.
+
+
+## 11-12 15:40-18:20 crash hunt (client, FairCrew)
+Tool: test/stress.py <minutes> (gym + random botfar/botback/botcrew every 4-14 s; prints alive|DEAD, last breadcrumb).
+Breadcrumbs: `local CRUMBS = true` in FairCrew main.lua writes the last step to faircrew_crumb.txt.
+
+| Run | Build | Result |
+|---|---|---|
+| 1 | 3 LoopAsync loops | DEAD 1.6 min, crumb "tick" |
+| 2 | same + fine crumbs | alive 25.1 min |
+| 3 | same | DEAD 20.2 min, crumb "beds GetFullName" |
+| 4 | bed key = object address | DEAD 15.5 min, crumb "walk loc" (K2_GetActorLocation) |
+| 5, 6 | pump run inside a RegisterHook callback (HUD draw, then player tick) | VOID: client hung at the first command |
+| 7 | hook queues pump via ExecuteInGameThread, async loop = watchdog | 55.7 min, 326 commands, no Lua crash; ended by a GPU device hang (DXGI_ERROR_DEVICE_HUNG, stack hash 08E4D92B..., no UE4SS frames) |
+
+Runs 1, 3, 4: same stack hash 971FE01C13691DB1C6C9089A71272A9BD43A8E38, access violation inside the UE4SS Lua VM,
+at a different Lua call each time. Reading: Lua state race between the LoopAsync threads and game-thread callbacks
+(unverified; supported only by run 7 lasting 2.7x longer than the longest crash time).
+Verdict: Lua VM crash not seen in 55.7 min on the pump build = PARTIAL (one run; cause of the GPU hang unverified).
+Rules learned: never run engine-calling code directly inside a RegisterHook callback (hang); keep Lua work out of LoopAsync threads.

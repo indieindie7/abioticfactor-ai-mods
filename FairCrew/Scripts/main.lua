@@ -41,16 +41,16 @@ local function log(s) local f = io.open(LOG, "a"); if f then f:write(os.date("%H
 log("loaded" .. (TEST and " (server test)" or ""))
 
 -- crash breadcrumb: last step reached, read after a client crash (C:/re/abioticfactor/faircrew_crumb.txt)
-local CRUMBS = false   -- true while hunting a client crash
+local CRUMBS = false    -- true while hunting a client crash
 local function crumb(c) if not CRUMBS then return end; local f = io.open("C:/re/abioticfactor/faircrew_crumb.txt", "w"); if f then f:write(os.date("%H:%M:%S ") .. c); f:close() end end
 local function loc(a) return a:K2_GetActorLocation() end
 local function d2(a, b) local x, y, z = a.X-b.X, a.Y-b.Y, a.Z-b.Z; return x*x+y*y+z*z end
 local function valid(o) return o and o:IsValid() end
 local function alive(a)   -- a destroyed actor stays IsValid until garbage collection
   if not valid(a) then return false end
-  local ok, dying = pcall(function() return a:IsActorBeingDestroyed() end)
+  crumb("alive dying"); local ok, dying = pcall(function() return a:IsActorBeingDestroyed() end)
   if ok and dying then return false end
-  local ok2, root = pcall(function() return a.RootComponent end)
+  crumb("alive root"); local ok2, root = pcall(function() return a.RootComponent end)
   return ok2 and valid(root)
 end
 
@@ -159,18 +159,22 @@ local function take_gift(p, row)
 end
 
 local beds, beds_t, claimed = {}, -100, {}   -- claimed[bed full name] = member
+-- 11-12: b:GetFullName() on a bed from FindAllOf crashed the client inside UE4SS (access violation, stress run 3,
+-- crumb "beds GetFullName"); the key is now the object address, which touches no engine data
+local function bed_key(b) return string.format("%x", b:GetAddress()) end
 local function refresh_beds()
   -- every tick (was 10 s): a cached bed actor can go stale when its area streams out/in (crash 4, 11-10)
   if clock - beds_t < TICK_S * 0.5 then return end
   beds_t = clock; beds = {}
   local seen = {}   -- parent + child bed classes both list the same actor
-  for _, cn in ipairs(BED_CLASSES) do for _, b in ipairs(FindAllOf(cn) or {}) do if valid(b) then local k = b:GetFullName(); if not seen[k] then seen[k] = true; beds[#beds+1] = b end end end end
+  for _, cn in ipairs(BED_CLASSES) do crumb("beds FindAllOf " .. cn); for _, b in ipairs(FindAllOf(cn) or {}) do if alive(b) then crumb("beds key"); local k = bed_key(b); if not seen[k] then seen[k] = true; beds[#beds+1] = b end end end end
   for _, b in ipairs(FAKE_BEDS or {}) do beds[#beds+1] = b end
 end
 local function free_bed_near(pos, r)
   for _, b in ipairs(beds) do
-    if FAKE_BEDS or alive(b) then
-      local k = b:GetFullName()
+    crumb("fb alive"); if FAKE_BEDS or alive(b) then
+      crumb("fb name"); local k = bed_key(b)
+      crumb("fb loc")
       if not (claimed[k] and valid(claimed[k].pawn)) and d2(loc(b), pos) < r*r then return b, k end
     end
   end
@@ -178,17 +182,19 @@ end
 
 local function tick()
   clock = clock + TICK_S
-  for i = #crew, 1, -1 do if not alive(crew[i].pawn) then log("lost " .. crew[i].name); if crew[i].bedkey then claimed[crew[i].bedkey] = nil end; table.remove(crew, i) end end
+  crumb("t alive"); for i = #crew, 1, -1 do if not alive(crew[i].pawn) then log("lost " .. crew[i].name); if crew[i].bedkey then claimed[crew[i].bedkey] = nil end; table.remove(crew, i) end end
   for _, m in ipairs(crew) do   -- a spawned NPC can start in MOVE_None (0) or with its movement tick off, and then never walks
-    pcall(function() local cm = m.pawn.CharacterMovement; if not cm:IsComponentTickEnabled() then cm:SetComponentTickEnabled(true) end; if cm.MovementMode == 0 then cm:SetMovementMode(1, 0) end end)
+    crumb("t modefix"); pcall(function() local cm = m.pawn.CharacterMovement; if not cm:IsComponentTickEnabled() then cm:SetComponentTickEnabled(true) end; if cm.MovementMode == 0 then cm:SetMovementMode(1, 0) end end)
   end
-  local pl = players()
+  crumb("t players"); local pl = players()
   if #pl == 0 then return end
+  crumb("t spawn")
   if AUTOSPAWN and #crew < WORLD_CAP and clock - last_spawn >= RESPAWN_S then last_spawn = clock; spawn_one(pl) end
 
-  refresh_beds()
+  crumb("t beds"); refresh_beds()
   for _, m in ipairs(crew) do
-    local here = loc(m.pawn)
+    crumb("t m loc"); local here = loc(m.pawn)
+    crumb("t m owner")
     if m.owner and not valid(m.owner) then m.owner = nil end
     m.fed = math.max(0, m.fed - TICK_S/FED_DOWN_S)
     if m.owner then m.rest = math.max(0, m.rest - TICK_S/REST_DOWN_S)
@@ -196,8 +202,9 @@ local function tick()
     if not m.owner then
       -- idle: AC-style wander around home; recruit when a player lingers close
       local best, bd
-      for _, p in ipairs(pl) do local dd = d2(here, loc(p)); if not bd or dd < bd then best, bd = p, dd end end
-      local gift = best and held_gift(best)
+      crumb("t m nearest"); for _, p in ipairs(pl) do local dd = d2(here, loc(p)); if not bd or dd < bd then best, bd = p, dd end end
+      crumb("t m gift"); local gift = best and held_gift(best)
+      crumb("t m asked")
       -- settled crew (has a bed) decides by its needs: rested + fed joins without a gift, hungry eats the gift first, tired refuses
       local asked = bd and bd < RECRUIT_UU*RECRUIT_UU and (gift or m.bed) and followers(best) < PER_PLAYER and clock >= (m.recruit_cd or 0)
       if asked then
@@ -228,7 +235,8 @@ local function tick()
       end
     else
       -- following: walk after the owner; friendship grows near, decays when left behind
-      local o = loc(m.owner); local dd = d2(here, o)
+      crumb("t m ownerloc"); local o = loc(m.owner); local dd = d2(here, o)
+      crumb("t m follow")
       if dd > FOLLOW_UU*FOLLOW_UU then move_to(m.pawn, o, FOLLOW_UU*0.5) end
       if dd < 1500*1500 then m.friend = math.min(100, m.friend + TICK_S/10)
       elseif dd > LEFT_UU*LEFT_UU then m.friend = m.friend - TICK_S/2 end
@@ -241,7 +249,8 @@ local function tick()
         log("went home " .. m.name)
       else
         -- move in: owner stands at a free bed with this follower close by
-        local b, k = free_bed_near(o, SETTLE_UU)
+        crumb("t m freebed"); local b, k = free_bed_near(o, SETTLE_UU)
+        crumb("t m freebed done")
         if b and dd < 800*800 then
           m.settle_s = (m.settle_s or 0) + TICK_S
           if m.settle_s >= SETTLE_S then
@@ -250,7 +259,7 @@ local function tick()
             local bl = loc(b); m.home = {X=bl.X, Y=bl.Y, Z=bl.Z}
             m.owner = nil; m.wander_t = 0; m.settle_s = 0
             m.recruit_cd = clock + 30   -- 11-10 run: owner still holding the gift re-recruited it 6 s after move-in (ate a 2nd Bandage)
-            log("moved in " .. m.name .. " bed=" .. k:match("[^%.:]+$"))
+            log("moved in " .. m.name .. " bed=" .. k)
           end
         else m.settle_s = 0 end
       end
@@ -259,8 +268,8 @@ local function tick()
 end
 
 local ticks = 0
-LoopAsync(math.floor(TICK_S*1000), function()
-  ExecuteInGameThread(function()
+local function crew_step()
+  do
     crumb("tick"); local ok, err = pcall(tick); if not ok then log("tick error " .. tostring(err)) end; crumb("tick end")
     if SELFTEST and not SELF then selftest_load() end
     if SELF then local ok2, err2 = pcall(SELF, clock); if not ok2 then log("selftest error " .. tostring(err2)) end end
@@ -270,9 +279,9 @@ LoopAsync(math.floor(TICK_S*1000), function()
       for _, m in ipairs(crew) do local l = loc(m.pawn); parts[#parts+1] = string.format("%s[%s f=%.0f r=%.0f h=%.0f %.0f,%.0f]", m.name:gsub("NarrativeNPC_", ""), m.owner and "follow" or (m.bed and "home" or "idle"), m.friend, m.rest, m.fed, l.X, l.Y) end
       log("crew " .. #crew .. " " .. table.concat(parts, " "))
     end
-  end)
-  return false
-end)
+  end
+end
+
 
 -- test keys (v0.2 test build): F9 = spawn a scientist 3 m in front of you, F10 = log crew + your held item
 local function me()
@@ -317,8 +326,8 @@ local function bot_goal(dest, accept)
   local l = loc(BOT); BG = {dest = dest, accept = accept or 50, t = 0, last = {X = l.X, Y = l.Y}, stuck = 0, glide = false, ndet = 0, spots = {}}
   return move_to(BOT, dest, BG.accept)
 end
-LoopAsync(100, function()
-  ExecuteInGameThread(function() pcall(function()
+local function walk_step()
+  pcall(function()
     if not BG then return end
     crumb("walk valid"); if not valid(BOT) then BG = nil; return end
     crumb("walk loc"); local l = loc(BOT); crumb("walk modefix"); local dx, dy = BG.dest.X - l.X, BG.dest.Y - l.Y; local d = math.sqrt(dx*dx + dy*dy)
@@ -364,9 +373,9 @@ LoopAsync(100, function()
       end
     end
     crumb("walk end")
-  end) end)
-  return false
-end)
+  end)
+end
+
 function t_botgo(dx, dy)
   if not valid(BOT) then log("botgo: no bot"); return end
   -- 11-10 run 1: bot stood still (not in crew, so the MOVE_None fix in tick() never touched it)
@@ -408,11 +417,11 @@ RegisterKeyBind(Key.F9, function() ExecuteInGameThread(function() pcall(t_spawn,
 RegisterKeyBind(Key.F10, function() ExecuteInGameThread(function() pcall(t_status) end) end)
 -- test command file (no focus needed): lines "spawn <uu>" | "status"
 local TCMD = "C:/re/abioticfactor/faircrew_cmd.txt"
-LoopAsync(500, function()
-  local f = io.open(TCMD, "r"); if not f then return false end
+local function cmd_step()
+  local f = io.open(TCMD, "r"); if not f then return end
   local lines = {}; for l in f:lines() do if #l > 0 then lines[#lines+1] = l end end
   f:close(); os.remove(TCMD)
-  ExecuteInGameThread(function()
+  do
     for _, l in ipairs(lines) do
       local op, n, n2 = l:match("^(%S+)%s*(%S*)%s*(%S*)")
       local ok, e = pcall(function()
@@ -428,7 +437,41 @@ LoopAsync(500, function()
       end)
       if not ok then log("cmd error " .. l .. " " .. tostring(e)) end
     end
+  end
+end
+
+-- 11-12: all work runs from ONE game-thread pump. Before, three LoopAsync threads ran Lua (file reads, closures,
+-- ExecuteInGameThread) next to the game-thread callbacks on the same Lua state; 5 client crashes inside the UE4SS
+-- Lua VM (same stack hash, a different Lua call each time). The pump hangs on the player character's ReceiveTick
+-- (game thread, every frame; BP_HUD:ReceiveDrawHUD stopped firing ~1 min after level load on the minimized client).
+-- The async loop is only a watchdog: it compares two numbers, and feeds the pump itself only while the hook is
+-- silent for over 1 s (main menu, dedicated server without players, hook lost on a level change).
+local PUMP_FN = "/Game/Blueprints/Characters/Abiotic_PlayerCharacter.Abiotic_PlayerCharacter_C:ReceiveTick"
+local t_crew, t_walk, t_cmd, t_hook, t_pump, hooked, via_async, n_async = 0, 0, 0, -10, 0, false, false, 0
+local pump
+local t_q = 0
+local pump_hook
+local function try_hook()
+  -- the hook only QUEUES the pump (ExecuteInGameThread from the game thread): running commands that spawn actors
+  -- directly inside the hook callback hung the client (runs 5 and 6, client "not responding" right at the first command)
+  local ok = pcall(RegisterHook, PUMP_FN, function()
+    local t = os.clock(); if t - t_q >= 0.1 then t_q = t; ExecuteInGameThread(pump_hook) end
   end)
+  if ok then hooked = true; log("pump hooked on PlayerCharacter:ReceiveTick") end
+end
+pump = function()
+  local t = os.clock()
+  if via_async then n_async = n_async + 1; if n_async == 1 or n_async % 600 == 0 then log("pump fed by async watchdog x" .. n_async) end end
+  t_pump = t
+  if t - t_walk >= 0.1 then t_walk = t; walk_step() end
+  if t - t_cmd >= 0.5 then t_cmd = t; local ok, e = pcall(cmd_step); if not ok then log("cmd_step error " .. tostring(e)) end end
+  if t - t_crew >= TICK_S then t_crew = t; crew_step() end
+  if (not hooked or via_async) and t - t_hook >= 5 then t_hook = t; try_hook() end
+end
+pump_hook = function() via_async = false; pump() end
+local function pump_async() via_async = true; pump() end
+LoopAsync(100, function()
+  if os.clock() - t_pump > 1 then ExecuteInGameThread(pump_async) end
   return false
 end)
 
