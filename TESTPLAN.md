@@ -154,3 +154,5 @@ at a different Lua call each time. Reading: Lua state race between the LoopAsync
 (unverified; supported only by run 7 lasting 2.7x longer than the longest crash time).
 Verdict: Lua VM crash not seen in 55.7 min on the pump build = PARTIAL (one run; cause of the GPU hang unverified).
 Rules learned: never run engine-calling code directly inside a RegisterHook callback (hang); keep Lua work out of LoopAsync threads.
+
+Run 8 (18:22-19:23, committed build a8885f7, stress.py 60): alive, 387 commands, 60.2 min, no new crash folder, pump fed by the async watchdog once (at start). Two long runs (55.7 and 60.2 min) without the Lua VM crash; longest earlier time-to-crash 20.2 min. Cause (Lua state race) still a hypothesis.
