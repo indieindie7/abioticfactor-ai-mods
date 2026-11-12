@@ -123,3 +123,14 @@ Fixes from this run: CLASSES only NarrativeNPC_BossAlly (_Heavy/_Sniper spawn wi
 - Fixed after the run (not re-run): recruit friendship could pass 100 (log showed 107.85), now capped.
 - Not tested: natural decay over real time (values were set by `needs`), "hungry follower goes to bed", player as owner. Numbers are first guesses; feel needs a human.
 
+
+## 11-12 13:44-14:26 autonav-style bot detours + hungry follower (client gym, 4 runs)
+User: "Lets test autonav please". Walker (FairCrew main.lua): stuck 4 s -> detour heading from HEAD = +45,-45,+90,-90,+135,-135 off the goal direction, 400 uu sub-waypoint by direct MoveTo, "ok" if it moved >= 200 uu; spot memory (stuck again within 150 uu of a tried spot -> same heading with leg 800, 1200, then next heading); glide only after all headings at a spot fail or 16 ok detours. move_to to the goal is re-issued only while not moving. No line traces.
+- Run 1 13:44-13:48 INVALID: both GPUs 92-96 % from other jobs, client ~2 fps (fairfps_log.txt), crashed 13:48:04.
+- Run 2 13:56-14:03 (~70 fps, no spot memory): 1 arrival glide=false (13:59:09, 23.8 s), 1 glide after 6 headings blocked (13:57:53), then a loop at -18475,14716: +90 "ok" ten times, bot walked back to the same spot each time.
+- Run 3 14:06-14:07 (spot memory): 1 arrival glide=false (14:07:34, 16.0 s); client crashed 14:07:57.
+- Run 4 14:17-14:26 (crumbs on, no crash): 13 detours ok, 8 blocked, 0 glides, 1 arrival glide=false (14:20:37, 14.0 s). On the other legs distance-to-go did not shrink after "ok" detours (e.g. 1742 -> 1825 uu) before the next test command replaced the goal.
+- Verdict: PARTIAL. Detours move the bot off a stuck spot and it sometimes arrives without gliding; blind headings do not reliably make progress to the goal. Why the straight MoveTo stalls in the gym is unverified (walls assumed, not measured).
+- Crashes: 2 of 4 runs, access violation inside UE4SS on the game thread from a Lua callback (CrashesECC-Windows-FDC203A349AA4926BCCA458602CA8C5E_0000, ...A274B82044900BFB84697DBA117F98AF_0000). Cause unverified; did not recur in run 4 with breadcrumbs (crumb(), flag CRUMBS, file faircrew_crumb.txt). Not seen in the 11-11 runs.
+- Hungry follower (hungry.py, run 4): PASS "went to bed ... hungry rest=80 fed=10" 14:25:11; PASS "declined ... hungry rest=84 fed=9" 14:25:44 (botgift 0). Rest rose 46 -> 84 at home, fed fell 10 -> 9 in real time (status lines). Join with no gift after needs 100 100 not shown here (crew was already following).
+- Lesson: check nvidia-smi before a client run; at ~2 fps walk tests are meaningless.

@@ -41,7 +41,8 @@ local function log(s) local f = io.open(LOG, "a"); if f then f:write(os.date("%H
 log("loaded" .. (TEST and " (server test)" or ""))
 
 -- crash breadcrumb: last step reached, read after a client crash (C:/re/abioticfactor/faircrew_crumb.txt)
-local function crumb(c) local f = io.open("C:/re/abioticfactor/faircrew_crumb.txt", "w"); if f then f:write(os.date("%H:%M:%S ") .. c); f:close() end end
+local CRUMBS = false   -- true while hunting a client crash
+local function crumb(c) if not CRUMBS then return end; local f = io.open("C:/re/abioticfactor/faircrew_crumb.txt", "w"); if f then f:write(os.date("%H:%M:%S ") .. c); f:close() end end
 local function loc(a) return a:K2_GetActorLocation() end
 local function d2(a, b) local x, y, z = a.X-b.X, a.Y-b.Y, a.Z-b.Z; return x*x+y*y+z*z end
 local function valid(o) return o and o:IsValid() end
