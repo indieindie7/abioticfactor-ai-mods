@@ -83,12 +83,13 @@ local function players()
   return out
 end
 
-local function move_to(pawn, dest, accept)
+local function move_to(pawn, dest, accept, straight)
   crumb("move_to controller"); local c = pawn.Controller
   if not valid(c) then return end
   crumb("move_to MoveToLocation path")
   -- EPathFollowingRequestResult: 0 Failed, 1 AlreadyAtGoal, 2 RequestSuccessful
-  local ok, r = pcall(function() return c:MoveToLocation(dest, accept, true, true, true, false, nil, true) end)
+  local ok, r = false, 0
+  if not straight then ok, r = pcall(function() return c:MoveToLocation(dest, accept, true, true, true, false, nil, true) end) end
   local direct = false
   if not ok or r == 0 then   -- no path (no navmesh here): walk straight instead of standing still
     direct = true; crumb("move_to MoveToLocation direct")
@@ -331,6 +332,112 @@ local function porter_step(m, here, o, dd)   -- true = porter is busy walking to
 end
 
 -- Guard v1: no damage. With an enemy inside GUARD_UU of its bed it stands on the line bed -> enemy.
+-- motion layer (11-13): humanlike moves. mo_go starts or updates a walk goal with a gait speed; mo_step (every 0.1 s)
+-- notices a blocked walk (no progress for 0.5 s, not falling) and tries in turn: jump, crouch for 3 s, forward launch.
+local STROLL, JOG, SPRINT = 190, 500, 685
+local PKO = nil
+local MO = {}
+local CL = {}                      -- pawns on a ladder: key -> {p, lad, top, rate, dx, dy, t_end}
+local XLAD = {}                    -- test ladders (parkour course)
+local LADS, LADS_T = {}, -100
+-- nearest ladder volume centre within 1500 uu (list refreshed at most every 10 s, only asked when a goal is above)
+local function near_ladder(l)
+  local now = os.clock()
+  if now - LADS_T > 10 then
+    LADS_T = now; LADS = {}
+    for _, cn in ipairs({"Deployed_Ladder_ParentBP_C", "Ladder_Generic_C"}) do
+      crumb("ladders FindAllOf"); local ok, a = pcall(FindAllOf, cn)
+      if ok and a then for _, x in ipairs(a) do if valid(x) then LADS[#LADS + 1] = x end end end
+    end
+    for _, x in ipairs(XLAD) do if valid(x) then LADS[#LADS + 1] = x end end
+    crumb("ladders done")
+  end
+  local best, bc, bd = nil, nil, 1500 * 1500
+  for _, x in ipairs(LADS) do
+    if valid(x) then
+      local ok, c = pcall(function() return x.LadderVolume:K2_GetComponentLocation() end)
+      if ok and c then local d = (c.X - l.X)^2 + (c.Y - l.Y)^2; if d < bd then best, bc, bd = x, c, d end end
+    end
+  end
+  return best, bc, math.sqrt(bd)
+end
+local MVCREW = false
+local MVSPD, MVSECS = 500, 14
+local MVSTRAIGHT = true
+local function MB() return (MVCREW and crew[1] and crew[1].pawn) or BODY end
+-- walk speed lever (probe 3): BaseWalkSpeed / CurrentWalkSpeed on the body; MaxWalkSpeed is ignored by this game.
+-- Sprint(bool) does nothing on an AI body; ToggleSprint does (probe 1: 685 uu/s).
+local function set_gait(p, spd)
+  local base = math.min(spd, JOG)
+  if p.BaseWalkSpeed ~= base then p.BaseWalkSpeed = base end
+  if p.CurrentWalkSpeed ~= base then p.CurrentWalkSpeed = base end
+  local want = spd > JOG
+  if p:IsSprinting() ~= want then crumb("gait ToggleSprint"); p:ToggleSprint(); crumb("gait done") end
+end
+local mo_go
+mo_go = function(pawn, dest, accept, spd, straight)
+  local k = string.format("%x", pawn:GetAddress()); local s = MO[k]
+  if not s then s = {pawn = pawn, last = loc(pawn), still = 0, tries = 0}; MO[k] = s end
+  if not s.dest or (s.dest.X - dest.X)^2 + (s.dest.Y - dest.Y)^2 > 200*200 then s.dbest = nil end
+  s.dest, s.accept, s.spd, s.straight = dest, accept, spd or JOG, straight
+  s.t = os.clock(); s.keep = straight   -- crew entries must be refreshed by the tick; a stale one is dropped (no hops while standing at home)
+  local ok, e = pcall(set_gait, pawn, s.spd); if not ok and not s.gerr then s.gerr = true; log("gait ERR " .. tostring(e):sub(-90)) end
+  if CL[k] then return true, 2, true end
+  local l = loc(pawn)
+  if dest.Z - l.Z > 150 then          -- goal is above: use a ladder when one is near
+    local lad, c, dd = near_ladder(l)
+    if lad then
+      s.lad_t = os.clock() + 0.5
+      if dd < 45 then
+        if not pawn.ClimbingLadder then crumb("mo ladder overlap"); pcall(function() lad:Server_ProcessLadderVolumeOverlap(pawn, true) end); crumb("mo done") end
+        local ex, ey = dest.X - l.X, dest.Y - l.Y; local en = math.max(1, math.sqrt(ex*ex + ey*ey))
+        CL[k] = {p = pawn, lad = lad, top = dest.Z + 10, rate = 14, dx = ex/en*300, dy = ey/en*300, t_end = os.clock() + 12}
+        log(string.format("mo ladder climb from %.0f to %.0f climbing=%s", l.Z, dest.Z + 10, tostring(pawn.ClimbingLadder)))
+        return true, 2, true
+      end
+      return move_to(pawn, {X = c.X, Y = c.Y, Z = l.Z}, 5.0, true)
+    end
+  end
+  return move_to(pawn, dest, accept, straight)
+end
+local function mo_step()
+  for k, s in pairs(MO) do
+    local ok, e = pcall(function()
+      if not alive(s.pawn) then MO[k] = nil; return end
+      local p = s.pawn; local l = loc(p); local now = os.clock()
+      local dx, dy = s.dest.X - l.X, s.dest.Y - l.Y; local d = math.sqrt(dx*dx + dy*dy)
+      if s.crouch_t and now >= s.crouch_t then s.crouch_t = nil; p:UnCrouch(false) end
+      if CL[k] then s.still = 0; s.last = l; return end
+      if s.lad_t and now >= s.lad_t then s.lad_t = nil; mo_go(p, s.dest, s.accept, s.spd, s.straight); s.last = l; return end
+      if s.hop_t and now >= s.hop_t and d > 1 then s.hop_t = nil; crumb("mo hop"); p:LaunchCharacter({X = dx/d*320, Y = dy/d*320, Z = 0}, true, false); crumb("mo hop done") end
+      local falling = p.CharacterMovement.MovementMode == 3
+      if s.air and not falling then crumb("mo land reissue"); move_to(p, s.dest, s.accept, true); crumb("mo done") end   -- a launch drops the move request
+      s.air = falling
+      if not s.dbest or d < s.dbest - 80 then s.dbest = d; s.tries = 0 end                                              -- progress: start the ladder of tries again
+      if not s.keep and now - (s.t or now) > 4 then MO[k] = nil; return end
+      if d <= s.accept + (s.keep and 40 or 120) then
+        if s.crouch_t then p:UnCrouch(false) end
+        if s.tries > 0 then log(string.format("mo arrived after %d tries", s.tries)) end
+        MO[k] = nil; return
+      end
+      local step = math.sqrt((l.X - s.last.X)^2 + (l.Y - s.last.Y)^2); s.last = l
+      local cm = p.CharacterMovement
+      if cm.MovementMode == 3 or step > 3 or (s.rest_t and now < s.rest_t) then s.still = 0; return end
+      s.still = s.still + 1
+      if s.still < 5 then return end
+      s.still = 0; s.tries = s.tries + 1
+      if s.tries > 8 then log(string.format("mo gave up d=%.0f", d)); s.tries = 0; s.rest_t = now + 20; return end
+      local t = s.tries % 3; local what
+      if t == 1 then crumb("mo Jump"); p:Jump(); s.hop_t = now + 0.22; what = "jump"
+      elseif t == 2 then crumb("mo Crouch"); p:Crouch(false); s.crouch_t = now + 3; what = "crouch"
+      else crumb("mo Launch"); p:LaunchCharacter({X = 0, Y = 0, Z = 520}, true, true); s.hop_t = now + 0.25; what = "launch" end
+      log(string.format("mo blocked try %d %s d=%.0f at %.0f,%.0f,%.0f", s.tries, what, d, l.X, l.Y, l.Z))
+      crumb("mo reissue"); move_to(p, s.dest, s.accept, s.straight or s.tries % 2 == 1); crumb("mo done")
+    end)
+    if not ok then log("mo ERR " .. tostring(e):sub(-90)); MO[k] = nil end
+  end
+end
+
 local function enemy_near(m)
   local skip = {}
   for _, c in ipairs(crew) do skip[bed_key(c.pawn)] = true end
@@ -374,6 +481,7 @@ local function tick()
 
   crumb("t beds"); refresh_beds()
   for _, m in ipairs(crew) do
+    if MVCREW and m == crew[1] then goto skip end
     crumb("t m loc"); local here = loc(m.pawn)
     crumb("t m owner")
     if m.owner and not valid(m.owner) then m.owner = nil end
@@ -420,7 +528,7 @@ local function tick()
         if clock >= m.wander_t then
           m.wander_t = clock + math.random(10, 20)
           local a = math.random() * 2 * math.pi; local r = math.random(m.bed and 100 or 200, m.bed and BED_WANDER_UU or WANDER_UU)
-          move_to(m.pawn, {X=m.home.X + r*math.cos(a), Y=m.home.Y + r*math.sin(a), Z=m.home.Z}, 50.0)
+          mo_go(m.pawn, {X=m.home.X + r*math.cos(a), Y=m.home.Y + r*math.sin(a), Z=m.home.Z}, 50.0, STROLL)
         end
       end
     else
@@ -428,7 +536,9 @@ local function tick()
       crumb("t m ownerloc"); local o = loc(m.owner); local dd = d2(here, o)
       crumb("t m follow")
       crumb("t m porter"); local busy = m.job == "porter" and porter_step(m, here, o, dd)
-      if not busy and dd > FOLLOW_UU*FOLLOW_UU then move_to(m.pawn, o, FOLLOW_UU*0.5) end
+      if not busy and dd > FOLLOW_UU*FOLLOW_UU then   -- gait by gap: stroll when close, jog, sprint pace when left behind
+        mo_go(m.pawn, o, FOLLOW_UU*0.5, dd > 1400*1400 and SPRINT or (dd > 750*750 and JOG or STROLL))
+      end
       if dd < 1500*1500 then m.friend = math.min(100, m.friend + TICK_S/10)
       elseif dd > LEFT_UU*LEFT_UU then m.friend = m.friend - TICK_S/2 end
       if m.bed and (m.rest < QUIT_NEED or m.fed < QUIT_NEED) then
@@ -455,6 +565,7 @@ local function tick()
         else m.settle_s = 0 end
       end
     end
+    ::skip::
   end
 end
 
@@ -517,6 +628,87 @@ local function bot_goal(dest, accept)
   local l = loc(BOT); BG = {dest = dest, accept = accept or 50, t = 0, last = {X = l.X, Y = l.Y}, stuck = 0, glide = false, ndet = 0, spots = {}}
   return move_to(BOT, dest, BG.accept)
 end
+-- parkour course (test), fits the 1200 gym: along +Y from the spare BODY: fenced lane with a hurdle (60 uu) and a low bar (130 uu clearance), then a ladder up a 2 m platform
+local LAD, LADMV = nil, nil
+local function t_parkour()
+  local l = loc(BODY); local g = l.Z - 90; local world = FindFirstOf("World")
+  local SMA = StaticFindObject("/Script/Engine.StaticMeshActor")
+  LoadAsset("/Engine/BasicShapes/Cube.Cube"); local cube = StaticFindObject("/Engine/BasicShapes/Cube.Cube")
+  local n = 0
+  local function box(x, y, z, sx, sy, sz)   -- centre offset from BODY's feet; engine cube is 100 uu
+    local bx = world:SpawnActor(SMA, {X = l.X + x, Y = l.Y + y, Z = g + z}, {Pitch = 0, Yaw = 0, Roll = 0})
+    if not valid(bx) then return end
+    local c = bx.StaticMeshComponent; c:SetMobility(2); c:SetStaticMesh(cube); bx:SetActorScale3D({X = sx, Y = sy, Z = sz}); n = n + 1
+  end
+  PKO = {X = l.X, Y = l.Y, Z = l.Z}; LADS_T = -100
+  box(0, 500, -10, 6, 13, 0.2)                                           -- own level floor (the gym floor drops 100 uu further along +Y)
+  box(0, 250, 30, 5, 0.3, 0.6)                                           -- hurdle
+  box(0, 550, 145, 5, 1.0, 0.3)                                          -- bar, underside 130 uu up
+  box(-265, 400, 80, 0.3, 6.0, 1.6); box(265, 400, 80, 0.3, 6.0, 1.6)    -- lane fences y+100..y+700: no way around
+  box(235, 900, 100, 3, 3, 2)                                            -- platform, top 200 uu up, ladder on its -X face
+  local lp = "/Game/Blueprints/DeployedObjects/Furniture/Ladder_Generic"
+  crumb("parkour ladder load"); LoadAsset(lp .. ".Ladder_Generic"); local lc = StaticFindObject(lp .. ".Ladder_Generic_C")
+  crumb("parkour ladder spawn"); LAD = lc and world:SpawnActor(lc, {X = l.X + 60, Y = l.Y + 900, Z = g + 200}, {Pitch = 0, Yaw = 0, Roll = 0})   -- the ladder's pivot is near its top (probe 2)
+  XLAD[1] = LAD; crumb("parkour done")
+  log(string.format("parkour boxes=%d ladder=%s feet %.0f,%.0f,%.0f", n, tostring(valid(LAD)), l.X, l.Y, g))
+end
+local function mo_clear(p) if valid(p) then MO[string.format("%x", p:GetAddress())] = nil end end
+local function lad_info()
+  if not valid(LAD) then log("ladinfo: no ladder"); return end
+  local a = loc(LAD); local out = string.format("ladinfo actor %.0f,%.0f,%.0f", a.X, a.Y, a.Z)
+  pcall(function() local v = LAD.LadderVolume; local c = v:K2_GetComponentLocation(); local e = v:GetScaledBoxExtent(); out = out .. string.format(" vol %.0f,%.0f,%.0f ext %.0f,%.0f,%.0f", c.X, c.Y, c.Z, e.X, e.Y, e.Z) end)
+  pcall(function() local r = LAD:K2_GetActorRotation(); out = out .. string.format(" yaw %.0f", r.Yaw) end)
+  pcall(function() out = out .. " speed " .. tostring(BODY.LadderClimbSpeed) .. " climbing " .. tostring(BODY.ClimbingLadder) .. " cur " .. tostring(valid(BODY.CurrentLadder)) end)
+  log(out)
+end
+-- Ladder climb for an AI body (probe 4): entering the ladder volume puts the body in the stock climbing state by itself
+-- (ClimbingLadder true, movement mode 5), but LadderMove does nothing without a local player, so the mod raises the body itself.
+local function climb_step()
+ for ck, c in pairs(CL) do
+  local ok, e = pcall(function()
+    if not valid(c.p) or os.clock() > c.t_end then log("climb timeout/gone"); CL[ck] = nil; return end
+    local l = loc(c.p)
+    if l.Z < c.top then
+      crumb("climb tp"); c.p:K2_TeleportTo({X = l.X, Y = l.Y, Z = l.Z + c.rate}, c.p:K2_GetActorRotation()); crumb("climb tp done")
+    else
+      crumb("climb exit"); c.p:ToggleLadderClimbing(false, c.lad); c.p:LaunchCharacter({X = c.dx, Y = c.dy, Z = 260}, true, true); crumb("climb exit done")
+      log(string.format("climb top at %.0f,%.0f,%.0f climbing=%s", l.X, l.Y, l.Z, tostring(c.p.ClimbingLadder))); CL[ck] = nil
+    end
+  end)
+  if not ok then log("climb ERR " .. tostring(e):sub(-90)); CL[ck] = nil end
+ end
+end
+local function lad_step()
+  climb_step()
+  if not LADMV then return end
+  if os.clock() >= LADMV.t_end or not valid(BODY) then LADMV = nil; return end
+  local ok, e = pcall(function() BODY:LadderMove(LADMV.v) end)
+  if not ok then log("ladmove ERR " .. tostring(e):sub(-90)); LADMV = nil end
+end
+
+local MV = nil   -- movement probe on the spare MB(): one sample per 0.1 s, one summary line at the end
+local function mv_start(tag, secs) local l = loc(MB()); MV = {tag = tag, t_end = os.clock() + secs, last = l, z0 = l.Z, zmax = l.Z, n = 0, dist = 0, mov = 0, vmov = 0, vmax = 0, amax = 0, maxstep = 0, fall = 0, cr = 0} end
+local function mv_step()
+  if not MV then return end
+  local ok, e = pcall(function()
+    if not valid(MB()) then MV = nil; return end
+    local l = loc(MB()); local s = MV
+    local step = math.sqrt((l.X-s.last.X)^2 + (l.Y-s.last.Y)^2)
+    s.n = s.n + 1; s.dist = s.dist + step; if step > s.maxstep then s.maxstep = step end; if step > 2 then s.mov = s.mov + 1 end
+    local q = MB():GetVelocity(); local v = math.sqrt(q.X*q.X + q.Y*q.Y); if v > s.vmax then s.vmax = v end; if v > 50 then s.vmov = s.vmov + 1 end
+    if l.Z > s.zmax then s.zmax = l.Z end
+    local cm = MB().CharacterMovement; if cm.MovementMode == 3 then s.fall = s.fall + 1 end
+    if MB().bIsCrouched then s.cr = s.cr + 1 end
+    pcall(function() local sp = MB().Mesh:GetAnimInstance().Speed; if sp > s.amax then s.amax = sp end end)
+    s.last = l
+    if os.clock() >= s.t_end then
+      log(string.format("mv %s n=%d dist=%.0f moving=%d velmoving=%d vmax=%.0f animmax=%.0f maxstep=%.0f zup=%.0f fall=%d crouched=%d mode=%d maxwalk=%.0f at %.0f,%.0f,%.0f", s.tag, s.n, s.dist, s.mov, s.vmov, s.vmax, s.amax, s.maxstep, s.zmax - s.z0, s.fall, s.cr, cm.MovementMode, cm.MaxWalkSpeed, l.X, l.Y, l.Z))
+      MV = nil
+    end
+  end)
+  if not ok then log("mv ERR " .. tostring(e):sub(-90)); MV = nil end
+end
+
 local function walk_step()
   pcall(function()
     if not BG then return end
@@ -731,7 +923,29 @@ local function cmd_step()
             if valid(comp) and valid(src) then crumb("bodyclone"); local ok, e = pcall(function() comp:Server_CloneCustomizationDataFromOtherComponent(src) end); crumb("bodyclone done")
               local hn = "?"; pcall(function() hn = src.Customization_Head.RowName:ToString() .. " / " .. comp.Customization_Head.RowName:ToString() end); log("bodyclone ok=" .. tostring(ok) .. " head src/body=" .. hn .. " err=" .. tostring(e)) else log("bodyclone: no comps") end
           end
-        elseif op == "bodypos" then if valid(BODY) then local l = loc(BODY); log(string.format("bodypos %.0f,%.0f,%.0f", l.X, l.Y, l.Z)) else log("bodypos: gone") end
+        elseif op == "pkcam" then local pc = FindFirstOf("PlayerController"); if valid(pc) and valid(pc.Pawn) and PKO then local x, y = PKO.X + (tonumber(n) or -120), PKO.Y + (tonumber(n2) or -380); pc.Pawn:K2_SetActorLocation({X = x, Y = y, Z = PKO.Z + 10}, false, {}, true); pc:SetControlRotation({Pitch = -4, Yaw = math.deg(math.atan(PKO.Y + ((tonumber(n2) or 0) < 300 and 500 or 900) - y, PKO.X + 40 - x)), Roll = 0}); log("pkcam at " .. math.floor(x) .. "," .. math.floor(y)) end
+        elseif op == "bodypos" then if valid(MB()) then local l = loc(MB()); log(string.format("bodypos %.0f,%.0f,%.0f", l.X, l.Y, l.Z)) else log("bodypos: gone") end
+        elseif op == "mvwho" then MVCREW = (n == "crew"); log("mvwho " .. (MVCREW and "crew" or "body") .. " valid=" .. tostring(valid(MB())))
+        elseif op == "mvsample" then if valid(MB()) then mv_start("sample", tonumber(n) or 8) end
+        elseif op == "mvauto" then if valid(MB()) then local l = loc(MB()); mv_start("auto", tonumber(MVSECS) or 14); local ok, r, d = mo_go(MB(), {X = l.X + (tonumber(n) or 0), Y = l.Y + (tonumber(n2) or 600), Z = l.Z}, 40, MVSPD, MVSTRAIGHT); log("mvauto ok=" .. tostring(ok) .. " r=" .. tostring(r) .. " direct=" .. tostring(d) .. " spd=" .. MVSPD) end
+        elseif op == "mvspd" then MVSPD = tonumber(n) or JOG; MVSECS = tonumber(n2) or 14; log("mvspd " .. MVSPD .. " secs " .. MVSECS)
+        elseif op == "parkour" then if valid(BODY) then t_parkour() end
+        elseif op == "ladinfo" then lad_info()
+        elseif op == "ladon" then if valid(BODY) and valid(LAD) then mv_start("ladon", 3); crumb("ladon"); local ok, e = pcall(function() BODY:ToggleLadderClimbing(n ~= "0", LAD) end); crumb("ladon done"); log("ladon " .. n .. " ok=" .. tostring(ok) .. (ok and "" or (" " .. tostring(e):sub(-90)))) end
+        elseif op == "ladclimb" then if valid(BODY) and valid(LAD) and PKO then mo_clear(BODY); mv_start("climb", 6); CL["test"] = {p = BODY, lad = LAD, top = PKO.Z + (tonumber(n) or 220), rate = tonumber(n2) or 14, dx = 300, dy = 0, t_end = os.clock() + 8}; log("ladclimb start climbing=" .. tostring(BODY.ClimbingLadder)) end
+        elseif op == "mvup" then if valid(MB()) and PKO then mv_start("up", 14); local ok, r = mo_go(MB(), {X = PKO.X + 235, Y = PKO.Y + 900, Z = PKO.Z + 208}, 40, JOG, true); log("mvup ok=" .. tostring(ok) .. " r=" .. tostring(r)) end
+        elseif op == "ladmove" then if valid(BODY) then local secs = tonumber(n2) or 4; mv_start("ladmove" .. n, secs + 0.5); LADMV = {v = tonumber(n) or 1.0, t_end = os.clock() + secs} end
+        elseif op == "mvprop" then if valid(MB()) then local ok, e = pcall(function() MB()[n] = tonumber(n2) end); local rd = "?"; pcall(function() rd = tostring(MB()[n]) end); log("mvprop " .. n .. "=" .. n2 .. " ok=" .. tostring(ok) .. " reads " .. rd .. (ok and "" or (" " .. tostring(e):sub(-70)))) end
+        elseif op == "mvcallb" then if valid(MB()) then mv_start(n, 2); crumb("mvcallb " .. n); local ok, e = pcall(function() MB()[n](MB(), n2 == "1") end); crumb("mvcallb done"); local sp = "?"; pcall(function() sp = tostring(MB():IsSprinting()) end); log("mvcallb " .. n .. " ok=" .. tostring(ok) .. " sprinting=" .. sp .. (ok and "" or (" " .. tostring(e):sub(-70)))) end
+        elseif op == "ladgo" then if valid(BODY) and valid(LAD) then mo_clear(BODY); local c = LAD.LadderVolume:K2_GetComponentLocation(); local l = loc(BODY); mv_start("ladgo", 5); local ok, r = pcall(function() return BODY.Controller:MoveToLocation({X = c.X + (tonumber(n) or 0), Y = c.Y, Z = l.Z}, 5.0, true, false, false, false, nil, true) end); log("ladgo ok=" .. tostring(ok) .. " r=" .. tostring(r)) end
+        elseif op == "bodytp" then if valid(MB()) and PKO then mo_clear(MB()); crumb("bodytp"); local ok, e = pcall(function() MB():K2_TeleportTo({X = PKO.X + (tonumber(n) or 0), Y = PKO.Y + (tonumber(n2) or 0), Z = PKO.Z + 10}, {Pitch = 0, Yaw = 90, Roll = 0}) end); crumb("bodytp done"); log("bodytp ok=" .. tostring(ok) .. (ok and "" or (" " .. tostring(e):sub(-90)))) end
+        elseif op == "ladovl" then if valid(BODY) and valid(LAD) then crumb("ladovl"); local ok, e = pcall(function() LAD:Server_ProcessLadderVolumeOverlap(BODY, n ~= "0") end); crumb("ladovl done"); log("ladovl " .. n .. " ok=" .. tostring(ok) .. (ok and "" or (" " .. tostring(e):sub(-90)))) end
+        elseif op == "mvstraight" then MVSTRAIGHT = n ~= "0"; log("mvstraight " .. tostring(MVSTRAIGHT))
+        elseif op == "mvgo" then if valid(MB()) then local l = loc(MB()); mv_start("go", 8); local ok, r, d = move_to(MB(), {X = l.X + (tonumber(n) or 0), Y = l.Y + (tonumber(n2) or 600), Z = l.Z}, 40); log("mvgo ok=" .. tostring(ok) .. " r=" .. tostring(r) .. " direct=" .. tostring(d)) end
+        elseif op == "mvjump" then if valid(MB()) then mv_start("jump", 3); crumb("mvjump Jump"); local ok, e = pcall(function() MB():Jump() end); crumb("mvjump done"); log("mvjump ok=" .. tostring(ok) .. (ok and "" or (" " .. tostring(e):sub(-70)))) end
+        elseif op == "mvcrouch" then if valid(MB()) then mv_start("crouch" .. n, 2); crumb("mvcrouch"); local ok, e = pcall(function() if n == "1" then MB():Crouch(false) else MB():UnCrouch(false) end end); crumb("mvcrouch done"); log("mvcrouch " .. n .. " ok=" .. tostring(ok) .. (ok and "" or (" " .. tostring(e):sub(-70)))) end
+        elseif op == "mvcall" then if valid(MB()) then mv_start(n, 3); crumb("mvcall " .. n); local ok, e = pcall(function() MB()[n](MB()) end); crumb("mvcall done"); log("mvcall " .. n .. " ok=" .. tostring(ok) .. (ok and "" or (" " .. tostring(e):sub(-90)))) end
+        elseif op == "mvset" then if valid(MB()) then local ok, e = pcall(function() MB().CharacterMovement[n] = tonumber(n2) or (n2 == "true") end); log("mvset " .. n .. "=" .. tostring(n2) .. " ok=" .. tostring(ok) .. (ok and "" or (" " .. tostring(e):sub(-70)))) end
         elseif op == "who" then   -- harness: our bodies must not count as players
           local na, nr = 0, 0
           for _, p in ipairs(FindAllOf("Abiotic_PlayerCharacter_C") or {}) do if valid(p) then na = na + 1; if not OURS[string.format("%x", p:GetAddress())] then nr = nr + 1 end end end
@@ -773,7 +987,7 @@ pump = function()
   local t = os.clock()
   if via_async then n_async = n_async + 1; if n_async == 1 or n_async % 600 == 0 then log("pump fed by async watchdog x" .. n_async) end end
   t_pump = t
-  if t - t_walk >= 0.1 then t_walk = t; walk_step() end
+  if t - t_walk >= 0.1 then t_walk = t; walk_step(); mo_step(); lad_step(); mv_step() end
   if t - t_cmd >= 0.5 then t_cmd = t; local ok, e = pcall(cmd_step); if not ok then log("cmd_step error " .. tostring(e)) end end
   if t - t_crew >= TICK_S then t_crew = t; crew_step() end
   if (not hooked or via_async) and t - t_hook >= 5 then t_hook = t; try_hook() end

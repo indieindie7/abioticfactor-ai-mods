@@ -183,3 +183,10 @@ Harness: `py -3.13 -I test/crew_harness.py [--keep]` (one client run, about 4 mi
 | H9 | client alive, no Lua errors | PASS | PASS |
 
 H6 is weak: speed 60 / 73 uu/s seen in 1 of 12 samples (1.3 s apart); in the others velocity was 0 while the position had changed between samples. So the crew moves in short bursts or is slow; a smooth walk is unverified and needs a human look or a faster sampler. Not covered: jobs (porter, guard), enemies, damage/death of a body, saves, multiplayer (dropped by the user).
+
+## Crew movement + parkour course (11-13)
+Motion layer in FairCrew/Scripts/main.lua: gaits STROLL 190 / JOG 500 / SPRINT 685 uu/s (BaseWalkSpeed + CurrentWalkSpeed, sprint by ToggleSprint); blocked move tries Jump, then Crouch, then a launch; ladder = stock climb state, rise driven by the mod (teleport steps), exit by ToggleLadderClimbing + launch.
+Course: command `parkour` (floor, hurdle y+250, bar y+550, fences, platform + Ladder_Generic_C at y+900).
+Harness rows (test/crew_harness.py, about 8 min): H10 test body lane, H11 test body ladder, H12 crew member lane, H13 crew member ladder. Run 5 (crew_harness_out_mo5.txt): H1-H13 PASS.
+Client GPU: env AF_ADAPTER=1 (run_route.ps1 in the project root) puts the client on the RTX 3060.
+Known gaps: crew lane run is flaky (harness run 5 pass; video run 19:23 veered to the fence and gave up, "mo gave up d=393"); test/vid_course.py gives no usable video (camera blocked by gym props; it also left the client running and mods.txt at AfPilot : 1); how the movement looks to a human, real-map ladders: unverified.
