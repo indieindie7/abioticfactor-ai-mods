@@ -166,3 +166,20 @@ Porter + Guard v1 (11-12, FairCrew, user: "Porter and guard could be useful lets
 | J4 | Guard clears when the enemy is gone; off duty below need 15; back on at rest 60 / fed 40 | PASS (guard clear, off duty tired rest=10, back on duty) |
 | J5 | Stress with job commands (`stress.py 20 jobs`) | alive 21.5 min, 51 commands, no new crash folder (stress_out9.txt). Command count is lower than earlier runs; cause unverified |
 Limits (not built): Porter bag and box are mod-side lists, no real inventory items move, a real player cannot hand items over (no probed inventory call). In J1/J2 the bot stayed within 800 uu of the bed, so items were unloaded one by one, not as a batch of 3. Guard deals no damage and does not draw the enemy's attention; whether enemies react to it is untested. Gift-picks-job mapping not built; jobs are set by the `job` test command only.
+
+## 11-13 crew = player bodies + crew harness (client gym, agent-vs-agent)
+Harness: `py -3.13 -I test/crew_harness.py [--keep]` (one client run, about 4 min; table on stdout, report C:\re\abioticfactor\crew_harness_report.md, exit 1 on any FAIL). Sets mods.txt AfPilot 1 at start, 0 at end, kills the client. Needs test commands `who` and `anim` in FairCrew.
+
+| row | check | 17:16 run | 17:27 run |
+|---|---|---|---|
+| H1 | bot owner + crew spawn as player bodies with Abiotic_AI_Controller_ParentBP_C | PASS | PASS |
+| H2 | random look: 9 parts set, the two bodies differ | PASS | PASS |
+| H3 | our bodies are not counted as players (bodies=3 real=1) | PASS | PASS |
+| H4 | recruited with a gift | PASS | PASS |
+| H5 | crew follows the owner (apart < 600 uu after the walk) | PASS 339 | PASS 234 |
+| H6 | walking feeds the anim blueprint (velocity and its Speed > 50) | PASS weak | PASS weak |
+| H7 | moves in to the owner's bed | PASS | PASS |
+| H8 | settled tired crew stays home, rest recovers | FAIL (harness order bug, fixed) | PASS r 6 -> 10 |
+| H9 | client alive, no Lua errors | PASS | PASS |
+
+H6 is weak: speed 60 / 73 uu/s seen in 1 of 12 samples (1.3 s apart); in the others velocity was 0 while the position had changed between samples. So the crew moves in short bursts or is slow; a smooth walk is unverified and needs a human look or a faster sampler. Not covered: jobs (porter, guard), enemies, damage/death of a body, saves, multiplayer (dropped by the user).

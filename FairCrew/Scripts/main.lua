@@ -732,6 +732,17 @@ local function cmd_step()
               local hn = "?"; pcall(function() hn = src.Customization_Head.RowName:ToString() .. " / " .. comp.Customization_Head.RowName:ToString() end); log("bodyclone ok=" .. tostring(ok) .. " head src/body=" .. hn .. " err=" .. tostring(e)) else log("bodyclone: no comps") end
           end
         elseif op == "bodypos" then if valid(BODY) then local l = loc(BODY); log(string.format("bodypos %.0f,%.0f,%.0f", l.X, l.Y, l.Z)) else log("bodypos: gone") end
+        elseif op == "who" then   -- harness: our bodies must not count as players
+          local na, nr = 0, 0
+          for _, p in ipairs(FindAllOf("Abiotic_PlayerCharacter_C") or {}) do if valid(p) then na = na + 1; if not OURS[string.format("%x", p:GetAddress())] then nr = nr + 1 end end end
+          log(string.format("who bodies=%d real=%d crew=%d bot=%s", na, nr, #crew, tostring(valid(BOT))))
+        elseif op == "anim" then   -- harness: is the body's anim blueprint fed while it walks (velocity + its Speed variable)
+          local m = crew[1]
+          if m and alive(m.pawn) then local v, sp = -1, "?"
+            crumb("anim vel"); pcall(function() local q = m.pawn:GetVelocity(); v = math.sqrt(q.X*q.X + q.Y*q.Y) end)
+            crumb("anim inst"); local ok, e = pcall(function() sp = tostring(m.pawn.Mesh:GetAnimInstance().Speed) end); crumb("anim done")
+            local l = loc(m.pawn); log(string.format("anim %s at %.0f,%.0f vel=%.0f animSpeed=%s%s", m.name, l.X, l.Y, v, sp, ok and "" or (" ERR " .. tostring(e):sub(-60))))
+          else log("anim: no crew") end
         elseif op == "botbed" then t_botbed(tonumber(n) or 150) end               -- cot next to the bot owner
       end)
       if not ok then log("cmd error " .. l .. " " .. tostring(e)) end
