@@ -3,16 +3,17 @@
 --   Animal Crossing (C:/re/animalcrossing/AI-MAP.md): home spot + idle wander, friendship that grows near you
 --     and decays when you leave them, leaves (goes home) when friendship runs out.
 --   Core Keeper villagers (C:/re/corekeeper/mod): small crew cap, follow the owner, return home when left.
--- Fair play: crew use the stock ally pawns (NarrativeNPC_BossAlly*) and their stock BT for combat;
+-- Fair play: crew are player-pipeline bodies (Abiotic_PlayerCharacter_C + the stock AI controller, random look; user 11-13), no player-only powers;
 -- no stat buffs, no teleports. FairSight caps their wall-tracking like everyone else.
 local SELFTEST = os.getenv("AF_FAIRCREW_SELFTEST") == "1"   -- scripted self-test, see selftest.lua
 local LOG  = (os.getenv("AF_FAIRSIGHT_TEST") == "1" or SELFTEST) and "C:/re/abioticfactor/faircrew_srv_log.txt" or "C:/re/abioticfactor/faircrew_log.txt"
 local TEST = os.getenv("AF_FAIRSIGHT_TEST") == "1"   -- server test: PlayerStart stands in for a player
 
-local CLASSES = {
-  "/Game/Blueprints/Characters/NarrativeNPCs/NarrativeNPC_BossAlly",
-  -- _Heavy + _Sniper dropped 11-10: spawn with no AI controller and vanish in seconds (Heavy also crashed V_Intro)
-}
+-- crew body (user 11-13: "npcs generated with the player creation pipeline ... able to freely move around"; probes A-C in NOTES.md)
+local BODY_CLASS = "/Game/Blueprints/Characters/Abiotic_PlayerCharacter.Abiotic_PlayerCharacter_C"
+local LOOK_PARTS = {"Head","HairStyle","HairColor","HeadAccessory","UpperBody","LowerBody","ShirtColor","Shoes","Tie"}
+local OURS = {}          -- address -> true for bodies we spawned: they are not players
+local crew_seq = 0
 local WORLD_CAP     = 3      -- scientists alive in the world at once
 local PER_PLAYER    = 2      -- followers per player
 local RESPAWN_S     = TEST and 5 or 600   -- seconds between spawns while under the cap
@@ -48,7 +49,7 @@ local function log(s) local f = io.open(LOG, "a"); if f then f:write(os.date("%H
 log("loaded" .. (TEST and " (server test)" or ""))
 
 -- crash breadcrumb: last step reached, read after a client crash (C:/re/abioticfactor/faircrew_crumb.txt)
-local CRUMBS = false    -- true while hunting a client crash
+local CRUMBS = false     -- true while hunting a client crash
 local function crumb(c) if not CRUMBS then return end; local f = io.open("C:/re/abioticfactor/faircrew_crumb.txt", "w"); if f then f:write(os.date("%H:%M:%S ") .. c); f:close() end end
 local function loc(a) return a:K2_GetActorLocation() end
 local function d2(a, b) local x, y, z = a.X-b.X, a.Y-b.Y, a.Z-b.Z; return x*x+y*y+z*z end
@@ -69,13 +70,15 @@ local clock = 0
 local FAKE, FAKE_BEDS, AUTOSPAWN, SELF = nil, nil, true, nil   -- self-test hooks
 local selftest_load
 local BOTGIFT = true   -- test: bot owner holds a virtual gift (command "botgift 0|1")
+local BODY = nil
+local ROWS = nil
 local BOT = nil   -- agent-vs-agent test: an NPC plays the owner (has a virtual gift), no player input needed
 
 local function players()
   if FAKE then return FAKE end
   if BOT then return valid(BOT) and {BOT} or {} end
   local out = {}
-  for _, p in ipairs(FindAllOf("Abiotic_PlayerCharacter_C") or {}) do if valid(p) then out[#out+1] = p end end
+  for _, p in ipairs(FindAllOf("Abiotic_PlayerCharacter_C") or {}) do if valid(p) and not OURS[string.format("%x", p:GetAddress())] then out[#out+1] = p end end
   if TEST and #out == 0 then local ps = FindFirstOf("PlayerStart"); if valid(ps) then out[1] = ps end end
   return out
 end
@@ -93,6 +96,37 @@ local function move_to(pawn, dest, accept)
   end
   if SELFTEST and movelog < 6 then movelog = movelog + 1; log("move ok=" .. tostring(ok) .. " r=" .. tostring(r) .. " direct=" .. tostring(direct)) end
   crumb("move_to done"); return ok, r, direct
+end
+
+local function load_rows()   -- row names of the customization tables, once
+  if ROWS then return ROWS end
+  local lib = StaticFindObject("/Script/Engine.Default__DataTableFunctionLibrary"); local R = {}
+  for _, t in ipairs(LOOK_PARTS) do
+    local dt = StaticFindObject("/Game/Blueprints/DataTables/Customization/DT_Customization_" .. t .. ".DT_Customization_" .. t); local names = {}
+    if valid(dt) then local out = {}; crumb("rows " .. t)
+      local ok, e = pcall(function() lib:GetDataTableRowNames(dt, out) end); if not ok then log("rows " .. t .. " ERR " .. tostring(e):sub(-80)) end
+      local et, cnt = "none", 0
+      for _, v in pairs(out) do local nm; et = type(v); cnt = cnt + 1
+        if et == "string" then nm = v else pcall(function() nm = v:ToString() end); if not nm then pcall(function() nm = v:get():ToString() end) end end
+        if nm then names[#names+1] = nm end end
+      log(string.format("rows %s ok=%s out=%d elem=%s names=%d", t, tostring(ok), cnt, et, #names))
+    else log("rows: no table " .. t) end
+    R[t] = {dt = dt, names = names}
+  end
+  ROWS = R; return R
+end
+-- random look: write a row on the body's HumanCustomizationComponent, then call that part's own OnRep (never Server_ApplyAllCustomizationData: hangs the pump)
+local function random_look(a)
+  local comp = a.HumanCustomizationComponent; if not valid(comp) then return "no component" end
+  local rows, said = load_rows(), {}
+  for _, t in ipairs(LOOK_PARTS) do
+    local r = rows[t]
+    if r and #r.names > 0 then local pick = r.names[math.random(#r.names)]; crumb("look " .. t)
+      local ok, e = pcall(function() comp["Customization_" .. t].RowName = FName(pick); comp["OnRep_Customization_" .. t](comp) end)
+      said[#said+1] = ok and (t .. "=" .. pick) or (t .. " ERR " .. tostring(e):sub(-60))
+    end
+  end
+  crumb("look done"); return table.concat(said, " ")
 end
 
 local function spawn_one(pl, at, as_bot)
@@ -123,16 +157,17 @@ local function spawn_one(pl, at, as_bot)
   if TEST and #crew == 0 then local s0 = loc(pl[1]); l = {X=s0.X+150, Y=s0.Y, Z=s0.Z} end   -- test: first one spawns next to the fake player
   if at then l = at end
   if not l then log("spawn: no spot (spawners " .. #spots .. ")"); return end
-  local path = CLASSES[math.random(#CLASSES)]
-  local name = path:match("([^/]+)$")
-  LoadAsset(path .. "." .. name)
-  local cls = StaticFindObject(path .. "." .. name .. "_C")
+  crew_seq = crew_seq + 1
+  local name = as_bot and "BotOwner" or ("Crew" .. crew_seq)
+  local cls = StaticFindObject(BODY_CLASS)
   if not valid(cls) then log("spawn: no class " .. name); return end
   local a = world:SpawnActor(cls, {X=l.X, Y=l.Y, Z=l.Z+100}, {Pitch=0, Yaw=math.random(0, 359), Roll=0})
   if not valid(a) then log("spawn: failed " .. name); return end
   -- 11-11 client: first scripted spawn came up at 0,0,0 (crew then spawned at "150 0 -100" and was lost): put it where it was asked
   pcall(function() local al = loc(a); if d2(al, {X=l.X, Y=l.Y, Z=l.Z+100}) > 500*500 then a:K2_SetActorLocation({X=l.X, Y=l.Y, Z=l.Z+100}, false, {}, true); log(string.format("spawn fixup from %.0f,%.0f,%.0f", al.X, al.Y, al.Z)) end end)
-  if not valid(a.Controller) then pcall(function() a:SpawnDefaultController() end) end   -- placed-by-script pawns can come up without AI
+  OURS[string.format("%x", a:GetAddress())] = true
+  if not valid(a.Controller) then pcall(function() a:SpawnDefaultController() end) end   -- a scripted player body has no controller: gives Abiotic_AI_Controller_ParentBP_C
+  log("look " .. name .. " " .. random_look(a))
   -- 11-11: the game builds navmesh only around navigation invokers (bGenerateNavigationOnlyAroundNavigationInvokers = true, RuntimeGeneration Dynamic).
   -- TEST/bot mode only: make spawned NPCs invokers so they can path away from any player (gym, dedicated server).
   if as_bot or BOT or TEST then
@@ -191,22 +226,69 @@ end
 -- Porter v1: the bag is a mod-side list (row -> count). Only the bot owner can hand items over (virtual held item,
 -- command "bothold"): taking real items from a player is OFF until a tested call exists that puts them into a box.
 -- The box is a ledger too (BOXES); what is tested is the behaviour: carry, walk to the box at base, unload.
+-- 11-13 real items: engine inventory calls (each probed alone first; pattern = AfPilot give).
+local ITEMTABLE = "/Game/Blueprints/Items/ItemTable_Global.ItemTable_Global"
+local function item_row(name) return {DataTable = StaticFindObject(ITEMTABLE), RowName = FName(name)} end
+local function inv_weight(inv) return valid(inv) and inv.CurrentTotalInventoryWeight or -1 end
+local function inv_put(inv, name, n)      -- place n of a row, slot by slot ('Try Place Item in Inventory' refuses from Lua); returns all placed, remaining
+  local slots = inv.CurrentInventory:GetArrayNum()
+  for i = 0, slots - 1 do
+    local r1, r2 = {}, {}
+    crumb("inv_put " .. name .. " x" .. n .. " slot " .. i)
+    inv:TryPlaceIteminInventorySlot(item_row(name), {CurrentStack = n, CurrentItemDurability = 100, MaxItemDurability = 100}, i, false, false, r1, r2, {})
+    crumb("inv_put done")
+    if r2.Success then n = r1.Remaining or 0; if n <= 0 then return true, 0 end end
+  end
+  return false, n
+end
+local function inv_slots(inv)             -- "row x stack" per used slot (read of the replicated array)
+  local t = {}
+  for i = 1, inv.CurrentInventory:GetArrayNum() do
+    local okr, txt = pcall(function() local e = inv.CurrentInventory[i]; local st = e.ChangeableData.CurrentStack
+      if st and st > 0 then return (i - 1) .. ":" .. e.ItemDataTable.RowName:ToString() .. "x" .. st end end)
+    if not okr then t[#t+1] = "err " .. tostring(txt):sub(-60); break elseif txt then t[#t+1] = txt end
+  end
+  return table.concat(t, " ")
+end
+local function inv_take(inv, name, n)     -- remove n of a row from an inventory; returns the engine's count value
+  crumb("inv_take " .. name .. " x" .. n)
+  inv["Remove Item from Inventory"](inv, item_row(name), false, n)
+  crumb("inv_take done")
+  return n
+end
+local function first_box() for _, b in ipairs(FindAllOf("Deployed_Container_ParentBP_C") or {}) do if alive(b) then return b end end end
+local function own_inv(which) local pc0 = FindFirstOf("PlayerController"); local p = pc0 and pc0.Pawn; if not valid(p) then return nil end
+  return which == "hot" and p.CharacterHotbarInventory or p.CharacterInventory end
+local HAND_UU = 450      -- porter takes items from an owner this close (above FOLLOW_UU 400: a follower stops before RECRUIT_UU)
+local HAUL = "scrap_"    -- a real owner hands over rows with this prefix (test: haul <prefix>)
+local function haul_row(inv)              -- first row in an inventory that the porter carries
+  for i = 1, inv.CurrentInventory:GetArrayNum() do
+    local e = inv.CurrentInventory[i]; local st = e.ChangeableData.CurrentStack
+    if st and st > 0 then local r = e.ItemDataTable.RowName:ToString(); if r:sub(1, #HAUL):lower() == HAUL:lower() then return r end end
+  end
+end
 local BOTHOLD = nil    -- {row=, n=}
 local BOXES = {}       -- [box key] = {row = n}
-local function porter_item(p) if p == BOT and BOTHOLD and BOTHOLD.n > 0 then return BOTHOLD.row end end
+local function porter_item(p)
+  if p == BOT then if BOTHOLD and BOTHOLD.n > 0 then return BOTHOLD.row end; return nil end
+  local inv = p.CharacterInventory; if valid(inv) then return haul_row(inv) end
+end
 local function porter_step(m, here, o, dd)   -- true = porter is busy walking to the box (no follow move this tick)
   m.bag = m.bag or {}; m.bagn = m.bagn or 0
   if m.bagn > 0 and m.last then m.walk = (m.walk or 0) + math.sqrt(d2(here, m.last)) end
   m.last = {X=here.X, Y=here.Y, Z=here.Z}
-  local row = porter_item(m.owner)
-  if row and dd < RECRUIT_UU*RECRUIT_UU and m.bagn < BAG_CAP and not m.unload then
+  local row = dd < HAND_UU*HAND_UU and m.bagn < BAG_CAP and not m.unload and not m.boxfail and porter_item(m.owner) or nil
+  if row and dd < HAND_UU*HAND_UU and m.bagn < BAG_CAP and not m.unload then
     m.give_s = (m.give_s or 0) + TICK_S
     if m.give_s >= RECRUIT_S then
-      m.give_s = 0; BOTHOLD.n = BOTHOLD.n - 1; m.bag[row] = (m.bag[row] or 0) + 1; m.bagn = m.bagn + 1
-      log(string.format("porter %s took %s bag=%d owner has %d left", m.name, row, m.bagn, BOTHOLD.n))
+      m.give_s = 0; local left = -1
+      if m.owner == BOT then BOTHOLD.n = BOTHOLD.n - 1; left = BOTHOLD.n else inv_take(m.owner.CharacterInventory, row, 1) end   -- player: a real item leaves the inventory
+      m.bag[row] = (m.bag[row] or 0) + 1; m.bagn = m.bagn + 1
+      log(string.format("porter %s took %s bag=%d owner has %d left%s", m.name, row, m.bagn, left, m.owner == BOT and "" or " (real item)"))
     end
   else m.give_s = 0 end
-  if m.bagn > 0 and m.bed and d2(o, m.home) < BASE_UU*BASE_UU then
+  if m.boxfail and clock >= m.boxfail then m.boxfail = nil end
+  if m.bagn > 0 and not m.boxfail and m.bed and d2(o, m.home) < BASE_UU*BASE_UU then
     local box, bd
     for _, b in ipairs(FindAllOf("Deployed_Container_ParentBP_C") or {}) do
       if alive(b) then local x = d2(loc(b), m.home); if x < BOX_UU*BOX_UU and (not bd or x < bd) then box, bd = b, x end end
@@ -216,9 +298,25 @@ local function porter_step(m, here, o, dd)   -- true = porter is busy walking to
     local bl = loc(box); local gx, gy = here.X-bl.X, here.Y-bl.Y; local gap = math.sqrt(gx*gx+gy*gy)   -- flat distance: box origin sits at floor height
     if gap < 220 then
       local k = bed_key(box); BOXES[k] = BOXES[k] or {}
-      for r, n in pairs(m.bag) do BOXES[k][r] = (BOXES[k][r] or 0) + n end
-      log(string.format("porter %s unloaded %d items into box %s, walked %.0f uu with load", m.name, m.bagn, k, m.walk or 0))
-      m.bag, m.bagn, m.walk, m.unload, m.ugap, m.ustall = {}, 0, 0, nil, nil, nil
+      local kept, keep = 0, {}     -- real items go into the chest's inventory; BOXES counts what was placed
+      for r, n in pairs(m.bag) do
+        local okp, rem = inv_put(box.ContainerInventory, r, n); if okp then rem = 0 end
+        if n - rem > 0 then BOXES[k][r] = (BOXES[k][r] or 0) + n - rem end
+        if rem > 0 then keep[r] = rem; kept = kept + rem end
+      end
+      log(string.format("porter %s unloaded %d real items into box %s, walked %.0f uu with load%s", m.name, m.bagn - kept, k, m.walk or 0,
+        kept > 0 and string.format(", keeps %d (box full or unknown row)", kept) or ""))
+      m.bag, m.bagn, m.walk, m.unload, m.ugap, m.ustall = keep, kept, 0, nil, nil, nil
+      if kept > 0 then
+        m.boxfail = clock + 60                  -- box full: no taking and no retry for a minute
+        if m.owner ~= BOT and valid(m.owner) and valid(m.owner.CharacterInventory) then     -- a real owner gets the rest back
+          for r, n in pairs(keep) do
+            local okp, rem = inv_put(m.owner.CharacterInventory, r, n); if okp then rem = 0 end
+            keep[r] = rem > 0 and rem or nil; m.bagn = m.bagn - (n - rem)
+            log(string.format("porter %s gave back %d %s to the owner, still holds %d", m.name, n - rem, r, rem))
+          end
+        end
+      end
       return false
     end
     if not m.unload then m.unload = true; log(string.format("porter %s unload start: box %.0f uu away, bag=%d", m.name, gap, m.bagn)) end
@@ -540,6 +638,7 @@ local function cmd_step()
         elseif op == "botgo" then t_botgo(tonumber(n) or 0, tonumber(n2) or 0)     -- walk the bot owner by an offset (AI pathing)
         elseif op == "botfar" then t_botfar(tonumber(n) or 1500)                  -- walk the bot to a navmesh-reachable point ~n uu away
         elseif op == "botback" then t_botback()                                     -- walk the bot back to its crew member's bed
+        elseif op == "crewtobot" then if valid(BOT) and crew[1] then local c = loc(BOT); crew[1].pawn:K2_SetActorLocation({X=c.X+120, Y=c.Y, Z=c.Z}, false, {}, true); log(string.format("crewtobot -> %.0f,%.0f", c.X+120, c.Y)) end   -- test: put the first crew member next to the bot owner
         elseif op == "botcrew" then if valid(BOT) and crew[1] then local c = loc(crew[1].pawn); BOT:K2_SetActorLocation({X=c.X+120, Y=c.Y, Z=c.Z}, false, {}, true); log(string.format("botcrew -> %.0f,%.0f", c.X+120, c.Y)) end   -- test: put the bot owner next to the first crew member
         elseif op == "botgift" then BOTGIFT = (n ~= "0"); log("botgift " .. tostring(BOTGIFT))
         elseif op == "needs" then local r, h = n, n2; for _, m in ipairs(crew) do m.rest = tonumber(r) or m.rest; m.fed = tonumber(h) or m.fed end; log("needs set rest=" .. tostring(r) .. " fed=" .. tostring(h))
@@ -549,6 +648,90 @@ local function cmd_step()
         elseif op == "enemy" then t_thing("/Game/Blueprints/Characters/NPCs/NPC_Peccary_Sow", tonumber(n) or 1000, 100, true)
         elseif op == "enemykill" then for _, e in ipairs(ENEMIES) do pcall(function() if alive(e) then e:K2_DestroyActor() end end) end; log("enemykill " .. #ENEMIES); ENEMIES = {}
         elseif op == "boxes" then for k, t in pairs(BOXES) do local parts = {}; for r, c in pairs(t) do parts[#parts+1] = r .. "=" .. c end; log("box " .. k .. " " .. table.concat(parts, " ")) end
+        elseif op == "boxw" then local b = first_box(); log("boxw " .. tostring(b and inv_weight(b.ContainerInventory)))
+        elseif op == "ownw" then log("ownw inv=" .. tostring(inv_weight(own_inv())) .. " hot=" .. tostring(inv_weight(own_inv("hot"))))
+        elseif op == "boxput" then local b = first_box(); if not b then log("boxput: no box") else local inv = b.ContainerInventory
+            local w0 = inv_weight(inv); local okp, rem = inv_put(inv, n, tonumber(n2) or 1)
+            log(string.format("boxput %s x%s -> success=%s remaining=%s weight %s -> %s", n, n2, tostring(okp), tostring(rem), tostring(w0), tostring(inv_weight(inv)))) end
+        elseif op == "owntake" or op == "owntakehot" then local inv = own_inv(op == "owntakehot" and "hot" or nil)
+          if not valid(inv) then log(op .. ": no inventory") else
+            local w0 = inv_weight(inv); local c = inv_take(inv, n, tonumber(n2) or 1)
+            log(string.format("%s %s x%s -> count=%s weight %s -> %s", op, n, n2, tostring(c), tostring(w0), tostring(inv_weight(inv)))) end
+        elseif op == "invsize" then local bx = first_box(); local function num(i) return valid(i) and i.CurrentInventory:GetArrayNum() or -1 end
+          log("invsize box=" .. tostring(bx and num(bx.ContainerInventory)) .. " own=" .. tostring(num(own_inv())) .. " hot=" .. tostring(num(own_inv("hot"))))
+        elseif op == "ownput" then local inv = own_inv(); local w0 = inv_weight(inv); local okp, rem = inv_put(inv, n, tonumber(n2) or 1)
+          log(string.format("ownput %s x%s -> success=%s remaining=%s weight %s -> %s", n, n2, tostring(okp), tostring(rem), tostring(w0), tostring(inv_weight(inv))))
+        elseif op == "boxslots" then crumb("boxslots")     -- every chest, with its place
+          for _, b in ipairs(FindAllOf("Deployed_Container_ParentBP_C") or {}) do
+            if alive(b) and valid(b.ContainerInventory) then local l = loc(b); log(string.format("boxslots @%.0f,%.0f %s", l.X, l.Y, inv_slots(b.ContainerInventory))) end
+          end
+        elseif op == "ownslots" then crumb("ownslots"); log("ownslots " .. inv_slots(own_inv()))
+        elseif op == "haul" then HAUL = n; log("haul prefix " .. HAUL)
+        elseif op == "ownbot" then local m = crew[1]; if m and valid(BOT) then m.owner = BOT; m.settled = false; log("ownbot " .. m.name) end
+        elseif op == "ownme" then local m = crew[tonumber(n) or 1]; local pc0 = FindFirstOf("PlayerController"); local pl = pc0 and pc0.Pawn   -- test: the local player becomes the owner
+          if m and valid(pl) then m.owner = pl; log(string.format("ownme %s owner = local player home %.0f %.0f %.0f", m.name, m.home.X, m.home.Y, m.home.Z)) end
+        elseif op == "look" then   -- test camera: turn the local player toward the midpoint of the bot owner and crew[1] (video capture)
+          local pc = FindFirstOf("PlayerController"); local m = crew[1]
+          if valid(pc) and valid(pc.Pawn) and (valid(BOT) or m) then
+            local h = loc(pc.Pawn); local t1 = valid(BOT) and loc(BOT) or loc(m.pawn); local t2 = m and loc(m.pawn) or t1
+            local dx, dy = (t1.X + t2.X) / 2 - h.X, (t1.Y + t2.Y) / 2 - h.Y
+            local yaw = math.deg(math.atan(dy, dx)); crumb("look SetControlRotation")
+            pc:SetControlRotation({Pitch = tonumber(n) or -8, Yaw = yaw, Roll = 0}); crumb("look done")
+            log(string.format("look yaw %.0f dist %.0f", yaw, math.sqrt(dx * dx + dy * dy)))
+          end
+        elseif op == "cam" then   -- test camera: stand beside the bot-crew line (n uu min) and face its midpoint, so both are in frame
+          local pc = FindFirstOf("PlayerController"); local m = crew[1]
+          if valid(pc) and valid(pc.Pawn) and valid(BOT) and m then
+            local h, t1, t2 = loc(pc.Pawn), loc(BOT), loc(m.pawn)
+            local mx, my = (t1.X + t2.X) / 2, (t1.Y + t2.Y) / 2
+            local ux, uy = t1.X - t2.X, t1.Y - t2.Y; local d = math.sqrt(ux * ux + uy * uy)
+            if d < 1 then ux, uy, d = 1, 0, 1 end
+            local px, py = -uy / d, ux / d
+            if (h.X - mx) * px + (h.Y - my) * py < 0 then px, py = -px, -py end     -- stay on the side the player is already on
+            local r = math.max(tonumber(n) or 380, d * 0.9)
+            local wx, wy = mx + px * r, my + py * r
+            local off = math.sqrt((h.X - wx) ^ 2 + (h.Y - wy) ^ 2)
+            if off > 150 then crumb("cam SetActorLocation"); pc.Pawn:K2_SetActorLocation({X = wx, Y = wy, Z = h.Z}, false, {}, true); h = {X = wx, Y = wy, Z = h.Z} end
+            local yaw = math.deg(math.atan(my - h.Y, mx - h.X)); crumb("cam SetControlRotation")
+            pc:SetControlRotation({Pitch = -6, Yaw = yaw, Roll = 0}); crumb("cam done")
+            log(string.format("cam me %.0f,%.0f,%.0f bot %.0f,%.0f,%.0f crew %.0f,%.0f,%.0f apart %.0f moved %s", h.X, h.Y, h.Z, t1.X, t1.Y, t1.Z, t2.X, t2.Y, t2.Z, d, tostring(off > 150)))
+          end
+        elseif op == "botplace" then   -- test: put the bot owner on a known open-floor spot (x y, player height)
+          local pl = me(); if valid(BOT) and pl then local h = loc(pl); BOT:K2_SetActorLocation({X = tonumber(n), Y = tonumber(n2), Z = h.Z}, false, {}, true); log("botplace " .. n .. " " .. n2 .. " z " .. math.floor(h.Z)) end
+        elseif op == "body" then   -- probe 11-13: a player-pipeline body with no player controller, n uu east of the player, camera turned to it
+          local pc = FindFirstOf("PlayerController"); local pl = pc and pc.Pawn; if not valid(pl) then log("body: no player") else
+            local cls = StaticFindObject("/Game/Blueprints/Characters/Abiotic_PlayerCharacter.Abiotic_PlayerCharacter_C"); local h = loc(pl)
+            crumb("body SpawnActor"); BODY = FindFirstOf("World"):SpawnActor(cls, {X = h.X + (tonumber(n) or 300), Y = h.Y, Z = h.Z + 20}, {Pitch = 0, Yaw = 180, Roll = 0}); crumb("body spawned")
+            pc:SetControlRotation({Pitch = -5, Yaw = 0, Roll = 0})
+            if valid(BODY) then local l = loc(BODY); log(string.format("body %s at %.0f,%.0f,%.0f ctrl=%s", BODY:GetFullName():sub(1, 60), l.X, l.Y, l.Z, tostring(valid(BODY.Controller)))) else log("body: spawn failed") end
+          end
+        elseif op == "bodyctl" then if valid(BODY) then crumb("bodyctl SpawnDefaultController"); BODY:SpawnDefaultController(); crumb("bodyctl done")
+            local c = BODY.Controller; local l = loc(BODY); log(string.format("bodyctl ctrl=%s at %.0f,%.0f,%.0f", valid(c) and c:GetFullName():sub(1, 70) or "none", l.X, l.Y, l.Z)) end
+        elseif op == "bodygo" then if valid(BODY) then local l = loc(BODY); local ok, r, d = move_to(BODY, {X = l.X, Y = l.Y + (tonumber(n) or 250), Z = l.Z}, 40); log("bodygo ok=" .. tostring(ok) .. " r=" .. tostring(r) .. " direct=" .. tostring(d)) end
+        elseif op == "bodyrows" then   -- probe C1: row names of every customization table
+          local lib = StaticFindObject("/Script/Engine.Default__DataTableFunctionLibrary"); ROWS = {}
+          for _, t in ipairs({"Head","HairStyle","HairColor","HeadAccessory","UpperBody","LowerBody","ShirtColor","Belt","Shoes","Tie","Beards","Watch","IDCard"}) do
+            local dt = StaticFindObject("/Game/Blueprints/DataTables/Customization/DT_Customization_" .. t .. ".DT_Customization_" .. t)
+            if valid(dt) then local out = {}; crumb("bodyrows " .. t); local ok, e = pcall(function() lib:GetDataTableRowNames(dt, out) end); crumb("bodyrows done")
+              local names = {}; local arr = out.OutRowNames; local how = type(arr)
+              if how == "table" then for _, v in pairs(arr) do names[#names+1] = type(v) == "string" and v or v:ToString() end
+              elseif how == "userdata" then local ok2, e2 = pcall(function() arr:ForEach(function(_, el) local v = el:get(); names[#names+1] = type(v) == "string" and v or v:ToString() end) end); if not ok2 then how = how .. " " .. tostring(e2):sub(-80) end end
+              local et = "?"
+              for _, v in pairs(out) do et = type(v); local nm = nil
+                if et == "string" then nm = v else pcall(function() nm = v:ToString() end); if not nm then pcall(function() nm = v:get():ToString() end) end end
+                if nm then names[#names+1] = nm end end
+              log("bodyrows " .. t .. " elem=" .. et)
+              ROWS[t] = {dt = dt, names = names}; log(string.format("bodyrows %s ok=%s n=%d first=%s err=%s", t, tostring(ok), #names, tostring(names[1]), tostring(e)))
+            else log("bodyrows no table " .. t) end
+          end
+        elseif op == "bodylook" then   -- probe C2: random rows written on the body's HumanCustomizationComponent, then its own OnRep per part
+          if valid(BODY) then log("bodylook " .. random_look(BODY)) end
+        elseif op == "bodyclone" then
+          if valid(BODY) then local comp = BODY.HumanCustomizationComponent; local pl = FindFirstOf("PlayerController").Pawn; local src = valid(pl) and pl.HumanCustomizationComponent
+            if valid(comp) and valid(src) then crumb("bodyclone"); local ok, e = pcall(function() comp:Server_CloneCustomizationDataFromOtherComponent(src) end); crumb("bodyclone done")
+              local hn = "?"; pcall(function() hn = src.Customization_Head.RowName:ToString() .. " / " .. comp.Customization_Head.RowName:ToString() end); log("bodyclone ok=" .. tostring(ok) .. " head src/body=" .. hn .. " err=" .. tostring(e)) else log("bodyclone: no comps") end
+          end
+        elseif op == "bodypos" then if valid(BODY) then local l = loc(BODY); log(string.format("bodypos %.0f,%.0f,%.0f", l.X, l.Y, l.Z)) else log("bodypos: gone") end
         elseif op == "botbed" then t_botbed(tonumber(n) or 150) end               -- cot next to the bot owner
       end)
       if not ok then log("cmd error " .. l .. " " .. tostring(e)) end
