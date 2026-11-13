@@ -8,7 +8,7 @@ Fair-play AI mods for Abiotic Factor (Steam, Unreal Engine 5.4), written as UE4S
 
 | Folder | What it does | Tested state |
 |---|---|---|
-| `FairSight` | Caps `LastSawTargetCheatDuration` (how long an AI keeps tracking your live position through walls after it lost sight) at 2 s for every AI controller. Sight and hearing are untouched. | Headless dedicated server: a spawned zombie went from 999999 to 2.0 (result from the project notes; no log of it in this repo). Effect on play: unverified. |
+| `FairSight` | Caps `LastSawTargetCheatDuration` (how long an AI keeps tracking your live position through walls after it lost sight) at 2 s for every AI controller. Sight and hearing are untouched. | Headless dedicated server: a spawned zombie went from 999999 to 2.0 (recorded in docs/AI-MAP.md section 8; the log file is not in this repo). Effect on play: unverified. |
 | `FairDirector` | Pacing: when a player's stress (low health, recent damage, NPCs close by) is high, spawns relax for a while; after a long calm they build up again. Never touches NPC senses. | Unverified in a world. |
 | `FairFps` | FPS text and a scrolling frame-time bar graph on the HUD, F8 toggle, frame-time log. | Real client, 2026-11-10: graph, toggle and log PASS (TESTPLAN.md). |
 | `FairCrew` | Stranded scientists you recruit with food or healing items. They follow you, move in to a bed you build, decide by their rest and food, can work as porter or guard, and move like a player (stroll, jog, sprint, jump, crouch, ladder). | Crew harness rows H1-H13 all PASS in one run (docs/crew_harness_report.md). The walk row (H6) saw the follower moving in 4 of 12 samples; two earlier runs were weak (speed 60 and 73 uu/s, seen in 1 of 12 samples), so a smooth walk is unverified. Known gaps below. |
@@ -44,5 +44,6 @@ The test scripts are tied to the PC they were written on: they expect this repo 
 - `docs/research_player_sync.md`: how a player is synced and drawn in multiplayer (from the object dump and general engine knowledge; not checked in game).
 - `docs/research_multiagent_testing.md`: how studios and researchers test games and robots with many agents; every source page was opened.
 - `docs/crew_harness_report.md`: the latest harness report.
+- `docs/AI-MAP.md`: static map of the game's AI (controllers, perception, spawn director), the places where the AI acts on information its senses did not give it, and the hook plan the mods started from.
 
 The docs cite `dump/UE4SS_ObjectDump.txt` by line number. That file is made from the game by `AFDump` and is not included.
