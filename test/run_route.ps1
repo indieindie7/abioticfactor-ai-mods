@@ -4,7 +4,7 @@ $w = "C:\Program Files (x86)\Steam\steamapps\common\AbioticFactor\AbioticFactor\
 Get-Process AbioticFactor-Win64-Shipping -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 4
 foreach ($n in 'FairCrew','AfPilot') { Copy-Item "C:\re\abioticfactor\mod\$n" "$w\ue4ss\Mods" -Recurse -Force }
 Remove-Item C:\re\abioticfactor\faircrew_log.txt, C:\re\abioticfactor\pilot_out.txt -ErrorAction SilentlyContinue
-Start-Process "$w\AbioticFactor-Win64-Shipping.exe" -ArgumentList '-graphicsadapter=0' -WindowStyle Minimized
+Start-Process "$w\AbioticFactor-Win64-Shipping.exe" -ArgumentList ("-graphicsadapter=" + $(if ($env:AF_ADAPTER) { $env:AF_ADAPTER } else { '0' })) -WindowStyle Minimized
 $c = "C:\re\abioticfactor\pilot_cmd.txt"
 Start-Sleep 55; Set-Content $c "exec open Facility" -Encoding ascii
 Start-Sleep 45; Set-Content $c "call W_Character_Trait_Selection_C CompleteTraitSelection" -Encoding ascii

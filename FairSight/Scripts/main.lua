@@ -1,6 +1,6 @@
 -- FairSight: NPCs keep tracking you through walls only for a short grace after losing sight.
 -- Stock: Abiotic_AI_Controller_ParentBP_C.LastSawTargetCheatDuration (parent 2 s; Zombie/Coworker/Boxy 999999,
--- BogMan/Boss_Shadow/Boss_Tentacle/Snowman/Tarasque 120, Robot_Defense 60, ...). See C:/re/abioticfactor/AI-MAP.md C1.
+-- BogMan/Boss_Shadow/Boss_Tentacle/Snowman/Tarasque 120, Robot_Defense 60, ...).
 local CAP = 2.0                      -- seconds of post-LoS live tracking allowed (stock parent default)
 local LOG = (os.getenv("AF_FAIRSIGHT_TEST") == "1") and "C:/re/abioticfactor/fairsight_srv_log.txt" or "C:/re/abioticfactor/fairsight_log.txt"
 local TESTFLAG = (os.getenv("AF_FAIRSIGHT_TEST") == "1") and "C:/re/abioticfactor/fairsight_srvtest.txt" or "C:/re/abioticfactor/fairsight_test.txt" -- if present: contains a map to open after menu (headless test)

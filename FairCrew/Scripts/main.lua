@@ -1,15 +1,16 @@
 -- FairCrew v0.2: random stranded scientists you can recruit as companions.
 -- Folds the villager-companion AIs we studied into one small loop:
---   Animal Crossing (C:/re/animalcrossing/AI-MAP.md): home spot + idle wander, friendship that grows near you
+--   Animal Crossing villagers: home spot + idle wander, friendship that grows near you
 --     and decays when you leave them, leaves (goes home) when friendship runs out.
---   Core Keeper villagers (C:/re/corekeeper/mod): small crew cap, follow the owner, return home when left.
--- Fair play: crew are player-pipeline bodies (Abiotic_PlayerCharacter_C + the stock AI controller, random look; user 11-13), no player-only powers;
--- no stat buffs, no teleports. FairSight caps their wall-tracking like everyone else.
+--   Core Keeper villagers: small crew cap, follow the owner, return home when left.
+-- Fair play: crew are player-pipeline bodies (Abiotic_PlayerCharacter_C + the stock AI controller, random look), no player-only powers;
+-- no stat buffs. A crew body's position is set directly in two places only: the ladder rise (small steps) and once at spawn
+-- when the body comes up more than 500 uu from its spot (test commands aside). FairSight caps their wall-tracking like everyone else.
 local SELFTEST = os.getenv("AF_FAIRCREW_SELFTEST") == "1"   -- scripted self-test, see selftest.lua
 local LOG  = (os.getenv("AF_FAIRSIGHT_TEST") == "1" or SELFTEST) and "C:/re/abioticfactor/faircrew_srv_log.txt" or "C:/re/abioticfactor/faircrew_log.txt"
 local TEST = os.getenv("AF_FAIRSIGHT_TEST") == "1"   -- server test: PlayerStart stands in for a player
 
--- crew body (user 11-13: "npcs generated with the player creation pipeline ... able to freely move around"; probes A-C in NOTES.md)
+-- crew body: made with the player character pipeline so it can move freely like a player
 local BODY_CLASS = "/Game/Blueprints/Characters/Abiotic_PlayerCharacter.Abiotic_PlayerCharacter_C"
 local LOOK_PARTS = {"Head","HairStyle","HairColor","HeadAccessory","UpperBody","LowerBody","ShirtColor","Shoes","Tie"}
 local OURS = {}          -- address -> true for bodies we spawned: they are not players
@@ -25,7 +26,7 @@ local WANDER_UU     = 700    -- idle wander radius around home
 local TICK_S        = 1.5
 local SETTLE_UU     = 250    -- owner this close to a free bed ...
 local SETTLE_S      = 3      -- ... this long (follower nearby) = scientist moves in
--- needs (user 11-11: "The crew should decide if they want to or not depending how well rested and fed they are")
+-- needs: the crew decide whether to join or keep following by how well rested and fed they are
 local REST_UP_S     = 6      -- seconds per +1 rest while at home near the own bed (0 -> 100 in 10 min)
 local REST_DOWN_S   = 18     -- seconds per -1 rest while following (100 -> 0 in 30 min)
 local FED_DOWN_S    = 30     -- seconds per -1 fed, always (100 -> 0 in 50 min)
@@ -33,7 +34,7 @@ local GIFT_FED      = 40     -- a gift item adds this much fed (gifts.lua does n
 local JOIN_REST     = 60     -- settled crew joins the owner only when rest >= this ...
 local JOIN_FED      = 40     -- ... and fed >= this (a gift is eaten first when hungry)
 local QUIT_NEED     = 15     -- a follower with a bed walks home when rest or fed drops below this
--- jobs (user 11-12: "Porter and guard could be useful lets have them tested too"; kept small, crew_jobs_plan.md 9 + 10)
+-- jobs: porter and guard, kept small (docs/crew_jobs_plan.md sections 9 + 10)
 local JOB_DRAIN     = {porter = 1.5, guard = 1.2}   -- rest drain multiplier while working
 local BAG_CAP       = 12     -- items a porter carries
 local BASE_UU       = 800    -- owner this close to the porter's bed = "back at base", porter unloads

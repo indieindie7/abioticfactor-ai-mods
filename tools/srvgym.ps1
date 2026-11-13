@@ -9,6 +9,6 @@ $p = Start-Process "$w\AbioticFactorServer-Win64-Shipping.exe" -ArgumentList '-l
 Start-Sleep 25
 py -3.13 -I "$PSScriptRoot\inject.py" $p.Id "$w\ue4ss\UE4SS.dll"
 Start-Sleep 30
-py -3.13 C:\re\abioticfactor\botrows.py srv
+py -3.13 "$PSScriptRoot\..\test\botrows.py" srv
 if ($p.HasExited) { "SERVER EXITED early (code $($p.ExitCode))" } else { Stop-Process -Id $p.Id -Force; "server stopped" }
 Select-String -Path "$w\ue4ss\UE4SS.log" -Pattern 'Fatal|AfPilot|error' | Select-Object -Last 8 | ForEach-Object { $_.Line }

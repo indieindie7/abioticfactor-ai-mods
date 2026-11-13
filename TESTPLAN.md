@@ -1,4 +1,6 @@
-# Test plan: FairCrew v0.2 + FairFps v0.1 (single player / host)
+# Test plan and test log: FairCrew v0.2 + FairFps v0.2 (single player / host)
+
+How to read this file: the table below is the first manual plan (2026-11-10). Every later section is a dated run, oldest first, and is left as it was written. Sections before 11-13 describe the NarrativeNPC ally bodies the crew used then (rows 4 and 8 below included); since 11-13 the crew are player bodies. The newest sections at the end give the current state. Log and output files named in this file (`*_out*.txt`, `*_log.txt`, crash folders) are local test output and are not in the repo.
 
 Restart the game first: mods load at game start. Logs: `C:/re/abioticfactor/faircrew_log.txt`, `C:/re/abioticfactor/fairfps_log.txt`.
 
@@ -18,7 +20,7 @@ Restart the game first: mods load at game start. Logs: `C:/re/abioticfactor/fair
 | 12 | Leave a follower 30+ m behind for ~1 min | friendship drops; at 0 it goes home | `went home` |
 | 13 | Save, quit, reload | (crew are not saved; new ones spawn every 10 min) | |
 
-Report: pass/fail per row, or just say "done" and Claude reads the logs.
+Report: pass/fail per row, or just say "done" and the logs are read instead.
 
 ## Automated self-test (FairCrew, no player needed)
 
@@ -33,7 +35,7 @@ Last result 2026-11-10: 12/12 pass, 1 SKIP, 1 INFO (one run after the last fix; 
 Server note: UE4SS v3.0.1-1214 dies at start ("StaticAlignment_Private is not valid") when Windows loads the server exe at an address whose low 32 bits are 0x80000000 or more. The test server exe here has ASLR switched off (DllCharacteristics 0x8160 -> 0x8100) so it always loads at 0x140000000.
 
 ## In-game run on the real client, 2026-11-10 13:05-13:32
-Standalone `open Facility` (no hosted world, no inventory; the game sat on the job-selection screen while the keys were pressed). Evidence is mod logs plus screenshots of the HUD corner. Details: ../NOTES.md.
+Standalone `open Facility` (no hosted world, no inventory; the game sat on the job-selection screen while the keys were pressed). Evidence is mod logs plus screenshots of the HUD corner. Details are in the project notes (not in this repo).
 
 | Row | Result | Evidence |
 |---|---|---|
@@ -81,7 +83,7 @@ Fixes from this run: CLASSES only NarrativeNPC_BossAlly (_Heavy/_Sniper spawn wi
 
 ## 11-11 07:32-07:54 gym + bot walker (dedicated test server)
 - New: AfPilot `gym [half]` (default 1200 uu): 8 wall halves with 3 m door gaps + 4 corner posts (engine cubes) + 2 cots around the player, or around PlayerStart when there is no player. FairCrew bot walker `bot_goal`: StopLogic on the bot's BrainComponent, MoveToLocation re-issued each 1 s, stuck <50 uu for 2 s -> glide (K2_SetActorLocation, 600 uu/s, test bot only); `botfar` with no reachable navmesh point glides +X. Runner mod/tools/srvgym.ps1 + `botrows.py srv`.
-- Client runs 07:32 + 07:35: UE4SS died in init, "Fatal Error: [FName::StaticAlignment] StaticAlignment_Private is not valid" (ASLR coin flip per boot, NOTES 11-10 12:10). Same ASLR-off patch on the client exe was BLOCKED by the auto-mode classifier; client exe untouched, no .bak-aslr. Client mod tests are off until a reboot re-rolls it or the user allows the patch.
+- Client runs 07:32 + 07:35: UE4SS died in init, "Fatal Error: [FName::StaticAlignment] StaticAlignment_Private is not valid" (ASLR coin flip per boot). The same ASLR-off patch was not applied to the client exe (untouched, no .bak-aslr). Client mod tests were off at that point (until a reboot re-rolls it or the patch is allowed).
 - Server run 2 (srvgym_out2.txt), gym centre -14748 15992 21565, boxes=12 cots=2, all agent-vs-agent:
   | Row | Result | Evidence |
   |---|---|---|
@@ -110,7 +112,7 @@ Fixes from this run: CLASSES only NarrativeNPC_BossAlly (_Heavy/_Sniper spawn wi
 
 
 ## 11-11 12:10-12:18 crew needs: rest + fed decide (client gym, agent-vs-agent)
-- User 11-11: "The crew should decide if they want to or not depending how well rested and fed they are". FairCrew: each crew member has rest + fed 0..100 (start 50/50). fed -1 per 30 s always; rest +1 per 6 s at home within 600 uu of the own bed, -1 per 18 s while following; a gift adds fed +40 (gifts.lua has no food/healing split yet, a Bandage feeds too).
+- Design rule (11-11): the crew decide whether to join by how well rested and fed they are. FairCrew: each crew member has rest + fed 0..100 (start 50/50). fed -1 per 30 s always; rest +1 per 6 s at home within 600 uu of the own bed, -1 per 18 s while following; a gift adds fed +40 (gifts.lua has no food/healing split yet, a Bandage feeds too).
 - Settled crew (has a bed) asked by an owner lingering 4 s within 300 uu: rest < 60 -> declines "tired"; fed < 40 and no gift -> declines "hungry"; fed < 40 with gift -> eats it and joins; rested + fed -> joins with no gift. Decline = 30 s cooldown. A follower with a bed whose rest or fed drops below 15 walks home ("went to bed"), keeps the bed. Wild crew (no bed) still needs a gift.
 - Test commands: `needs <rest> <fed>`, `botgift 0|1`, `botcrew`. Script mod/test/needsrows.py. Status shows r= h=.
   | Row | Result | Evidence (faircrew_log.txt) |
@@ -125,13 +127,13 @@ Fixes from this run: CLASSES only NarrativeNPC_BossAlly (_Heavy/_Sniper spawn wi
 
 
 ## 11-12 13:44-14:26 autonav-style bot detours + hungry follower (client gym, 4 runs)
-User: "Lets test autonav please". Walker (FairCrew main.lua): stuck 4 s -> detour heading from HEAD = +45,-45,+90,-90,+135,-135 off the goal direction, 400 uu sub-waypoint by direct MoveTo, "ok" if it moved >= 200 uu; spot memory (stuck again within 150 uu of a tried spot -> same heading with leg 800, 1200, then next heading); glide only after all headings at a spot fail or 16 ok detours. move_to to the goal is re-issued only while not moving. No line traces.
-- Run 1 13:44-13:48 INVALID: both GPUs 92-96 % from other jobs, client ~2 fps (fairfps_log.txt), crashed 13:48:04.
+Autonav test. Walker (FairCrew main.lua): stuck 4 s -> detour heading from HEAD = +45,-45,+90,-90,+135,-135 off the goal direction, 400 uu sub-waypoint by direct MoveTo, "ok" if it moved >= 200 uu; spot memory (stuck again within 150 uu of a tried spot -> same heading with leg 800, 1200, then next heading); glide only after all headings at a spot fail or 16 ok detours. move_to to the goal is re-issued only while not moving. No line traces.
+- Run 1 13:44-13:48 INVALID: GPU load 92-96 % from other jobs, client ~2 fps (fairfps_log.txt), crashed 13:48:04.
 - Run 2 13:56-14:03 (~70 fps, no spot memory): 1 arrival glide=false (13:59:09, 23.8 s), 1 glide after 6 headings blocked (13:57:53), then a loop at -18475,14716: +90 "ok" ten times, bot walked back to the same spot each time.
 - Run 3 14:06-14:07 (spot memory): 1 arrival glide=false (14:07:34, 16.0 s); client crashed 14:07:57.
 - Run 4 14:17-14:26 (crumbs on, no crash): 13 detours ok, 8 blocked, 0 glides, 1 arrival glide=false (14:20:37, 14.0 s). On the other legs distance-to-go did not shrink after "ok" detours (e.g. 1742 -> 1825 uu) before the next test command replaced the goal.
 - Verdict: PARTIAL. Detours move the bot off a stuck spot and it sometimes arrives without gliding; blind headings do not reliably make progress to the goal. Why the straight MoveTo stalls in the gym is unverified (walls assumed, not measured).
-- Crashes: 2 of 4 runs, access violation inside UE4SS on the game thread from a Lua callback (Saved/Crashes/UECC-Windows-FDC203A349AA4926BCCA458602CA8C5E_0000, ...A274B82044900BFB84697DBA117F98AF_0000). Cause unverified; did not recur in run 4 with breadcrumbs (crumb(), flag CRUMBS, file faircrew_crumb.txt). Not seen in the 11-11 runs.
+- Crashes: 2 of 4 runs, access violation inside UE4SS on the game thread from a Lua callback (two crash folders under Saved/Crashes). Cause unverified; did not recur in run 4 with breadcrumbs (crumb(), flag CRUMBS, file faircrew_crumb.txt). Not seen in the 11-11 runs.
 - Hungry follower (hungry.py, run 4): PASS "went to bed ... hungry rest=80 fed=10" 14:25:11; PASS "declined ... hungry rest=84 fed=9" 14:25:44 (botgift 0). Rest rose 46 -> 84 at home, fed fell 10 -> 9 in real time (status lines). Join with no gift after needs 100 100 not shown here (crew was already following).
 - Lesson: check nvidia-smi before a client run; at ~2 fps walk tests are meaningless.
 
@@ -157,7 +159,7 @@ Rules learned: never run engine-calling code directly inside a RegisterHook call
 
 Run 8 (18:22-19:23, committed build a8885f7, stress.py 60): alive, 387 commands, 60.2 min, no new crash folder, pump fed by the async watchdog once (at start). Two long runs (55.7 and 60.2 min) without the Lua VM crash; longest earlier time-to-crash 20.2 min. Cause (Lua state race) still a hypothesis.
 
-Porter + Guard v1 (11-12, FairCrew, user: "Porter and guard could be useful lets have them tested too"), client gym, bot owner, mod/test/jobs_test.py:
+Porter + Guard v1 (11-12, FairCrew), client gym, bot owner, mod/test/jobs_test.py:
 | Row | Check | Result |
 |---|---|---|
 | J1 | Porter takes items from the bot owner (virtual `bothold Scrap 3`), one per 4 s within 300 uu | PASS (3 "took Scrap" lines, jobs_out2.txt 19:45-19:46) |
@@ -165,10 +167,10 @@ Porter + Guard v1 (11-12, FairCrew, user: "Porter and guard could be useful lets
 | J3 | Guard at home stands on the line bed -> enemy (spawned NPC_Peccary_Sow), max 400 uu out | PASS ("crew 0 uu off post" within 6 s, follows the sow as it moves) |
 | J4 | Guard clears when the enemy is gone; off duty below need 15; back on at rest 60 / fed 40 | PASS (guard clear, off duty tired rest=10, back on duty) |
 | J5 | Stress with job commands (`stress.py 20 jobs`) | alive 21.5 min, 51 commands, no new crash folder (stress_out9.txt). Command count is lower than earlier runs; cause unverified |
-Limits (not built): Porter bag and box are mod-side lists, no real inventory items move, a real player cannot hand items over (no probed inventory call). In J1/J2 the bot stayed within 800 uu of the bed, so items were unloaded one by one, not as a batch of 3. Guard deals no damage and does not draw the enemy's attention; whether enemies react to it is untested. Gift-picks-job mapping not built; jobs are set by the `job` test command only.
+Limits at the time of these rows (11-12): Porter bag and box were mod-side lists, no real inventory items moved, a real player could not hand items over (changed 11-13, see "Porter with real items" at the end). In J1/J2 the bot stayed within 800 uu of the bed, so items were unloaded one by one, not as a batch of 3. Guard deals no damage and does not draw the enemy's attention; whether enemies react to it is untested. Gift-picks-job mapping not built; jobs are set by the `job` test command only.
 
 ## 11-13 crew = player bodies + crew harness (client gym, agent-vs-agent)
-Harness: `py -3.13 -I test/crew_harness.py [--keep]` (one client run, about 4 min; table on stdout, report C:\re\abioticfactor\crew_harness_report.md, exit 1 on any FAIL). Sets mods.txt AfPilot 1 at start, 0 at end, kills the client. Needs test commands `who` and `anim` in FairCrew.
+Harness: `py -3.13 -I test/crew_harness.py [--keep]` (one client run, about 4 min for rows H1-H9, about 8 min with H10-H13; table on stdout, report C:\re\abioticfactor\crew_harness_report.md, exit 1 on any FAIL). Sets mods.txt AfPilot 1 at start, 0 at end, kills the client. Needs test commands `who` and `anim` in FairCrew.
 
 | row | check | 17:16 run | 17:27 run |
 |---|---|---|---|
@@ -188,5 +190,10 @@ H6 is weak: speed 60 / 73 uu/s seen in 1 of 12 samples (1.3 s apart); in the oth
 Motion layer in FairCrew/Scripts/main.lua: gaits STROLL 190 / JOG 500 / SPRINT 685 uu/s (BaseWalkSpeed + CurrentWalkSpeed, sprint by ToggleSprint); blocked move tries Jump, then Crouch, then a launch; ladder = stock climb state, rise driven by the mod (teleport steps), exit by ToggleLadderClimbing + launch.
 Course: command `parkour` (floor, hurdle y+250, bar y+550, fences, platform + Ladder_Generic_C at y+900).
 Harness rows (test/crew_harness.py, about 8 min): H10 test body lane, H11 test body ladder, H12 crew member lane, H13 crew member ladder. Run 5 (crew_harness_out_mo5.txt): H1-H13 PASS.
-Client GPU: env AF_ADAPTER=1 (run_route.ps1 in the project root) puts the client on the RTX 3060.
+Client GPU: env AF_ADAPTER=1 (run_route.ps1 in the project root) puts the client on the second GPU.
 Known gaps: crew lane run is flaky (harness run 5 pass; video run 19:23 veered to the fence and gave up, "mo gave up d=393"); test/vid_course.py gives no usable video (camera blocked by gym props; it also left the client running and mods.txt at AfPilot : 1); how the movement looks to a human, real-map ladders: unverified.
+
+## Porter with real items (11-13, client gym)
+The porter takes real items from the owner's inventory (owner within 450 uu) and puts them into a real storage chest near its bed.
+One run (log real_out2.txt, not in the repo): with a bot owner, 3 Bandage ended in the chest (slot 0 x3); with the player as owner, 7 real Bandage were taken and 6 placed (one slot each, no stacking onto existing piles; the chest was full at 8 slots).
+Not tested: give-back to the owner when the chest is full (coded only). Later runs that day failed on the test bot's walking (bed not reached) and testing was paused. No harness row covers the porter with real items.
